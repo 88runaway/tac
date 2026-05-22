@@ -1,0 +1,35 @@
+# RDP deployment config for UniVTAC benchmark evaluation.
+#
+# Checkpoint resolution (in order of priority):
+#   1. ckpt_dir: set explicitly here
+#   2. CKPT_ROOT env var: $CKPT_ROOT/<task_name>/$CKPT_CONFIG/checkpoints/latest.ckpt
+#   3. Default fallback: $RDP_ROOT/ckpt/<task_name>/univtac/
+#
+# Tactile mode must match the training pipeline:
+#   rgb        -> trained with univtac_dp / univtac_at / univtac_ldp
+#   marker_emb -> trained with univtac_at_marker_emb / univtac_ldp_marker_emb
+#                 also requires PCA_DIR env var or pca_dir below
+
+policy_name: RDP
+seed: 0
+instruction_type: seen
+instuction_file: null
+
+# Explicit checkpoint directory (null = resolved from CKPT_ROOT env var)
+ckpt_dir: null
+
+# "ldp" for Latent Diffusion Policy (2-stage), "dp" for Diffusion Policy (1-stage)
+policy_type: ldp
+
+# Must match training config (at.n_obs_steps in at_univtac.yaml)
+n_obs_steps: 2
+
+# Must match training config (at.dataset_obs_temporal_downsample_ratio)
+dataset_obs_temporal_downsample_ratio: 1
+
+# Tactile encoding: "rgb" or "marker_emb"
+tactile_mode: marker_emb
+
+# Path to PCA matrices directory (required only when tactile_mode=marker_emb)
+# Can also be set via PCA_DIR environment variable.
+pca_dir: null

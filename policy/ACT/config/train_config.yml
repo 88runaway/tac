@@ -38,6 +38,5 @@ tactile_names:
 lr_tactile_backbone: 0.00001
 tactile_masks: false
 tactile_backbone: resnet18
-# tactile_ckpt: encoder/checkpoints/resnet18/20251202-114847/best.pth
-tactile_ckpt: encoder/checkpoints/resnet18/20251128-125750/best.pth
+tactile_ckpt: /data1/zjb/ckpt/UniVTAC/checkpoints/encoder.pth
 tactile_dilation: false

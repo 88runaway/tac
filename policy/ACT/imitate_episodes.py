@@ -87,7 +87,7 @@ def main(args):
         print("TacArena ACT Policy Evaluation")
         print("=" * 60)
         print("Please use the unified evaluation script:")
-        print("  python scripts/eval_policy.py policy/ACT/deploy_policy_{task_name}.yml")
+        print("  bash sh/eval_policy.sh {task_name} {task_config} ACT/config/deploy {gpu_id}")
         print("")
         print("Note: TacArena uses IsaacLab simulation environment for evaluation.")
         print("      The eval_bc() function is for RoboTwin's MuJoCo environment.")

@@ -113,7 +113,7 @@ from isaaclab.sim.utils import export_prim_to_file
 
 from pathlib import Path
 from pxr import Usd, Sdf, Gf
-from utils.mesh_gen import MeshGenerator, TetMeshCfg
+from mesh_gen import MeshGenerator, TetMeshCfg
 
 def visualize_tet(tet_points, tet_indices, is_save=False):
     import trimesh

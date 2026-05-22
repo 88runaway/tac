@@ -150,9 +150,11 @@ class RobotManager:
             )
 
     def plan_arm(self, target_pose:Pose, constraint_pose=None, pre_dis=None, time_dilation_factor=None):
+        curr_joint_pos = self.robot.data.joint_pos[0, :self.robot.num_joints-2]
+        curr_joint_vel = self.robot.data.joint_vel[0, :self.robot.num_joints-2]
         result:MotionGenResult = self.planner.plan_path(
-            curr_joint_pos=self.robot.data.joint_pos[0, :self.robot.num_joints-2],
-            curr_joint_vel=self.robot.data.joint_vel[0, :self.robot.num_joints-2],
+            curr_joint_pos=curr_joint_pos,
+            curr_joint_vel=curr_joint_vel,
             target_ee_pose=target_pose,
             real_robot_pose=self.root_pose,
             pre_dis=pre_dis,
@@ -168,6 +170,11 @@ class RobotManager:
                 'velocity': result.interpolated_plan.velocity.detach()
             }
         else:
+            status_msg = result.status if hasattr(result, 'status') else 'unknown'
+            self.task.logger.warning(
+                f'plan_arm failed: status={status_msg}, valid_query={result.valid_query}, '
+                f'joint_pos={curr_joint_pos.cpu().tolist()}, '
+                f'ee_pose={self.get_ee_pose().tolist()}')
             return {'status': 'Fail', 'num_steps': 0, 'position': None, 'velocity': None}
 
     def gripper_percent2qpos(self, percentage:float):

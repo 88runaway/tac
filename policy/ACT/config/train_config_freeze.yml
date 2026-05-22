@@ -17,7 +17,7 @@ num_steps: 4000
 batch_size: 64
 save_freq: 1000
 position_embedding: sine
-lr_vision_backbone: 0.0
+lr_vision_backbone: 0.00001
 weight_decay: 0.0001
 lr: 0.00001
 masks: false
@@ -28,15 +28,15 @@ enc_layers: 4
 dec_layers: 7
 pre_norm: false
 dropout: 0.1
-camera_names: []
+camera_names:
+  - cam_high
 
 # tactile args
 tactile_names:
   - tac_left
   - tac_right
-tactile_type: full
-lr_tactile_backbone: 0.00001
+lr_tactile_backbone: 0.0
 tactile_masks: false
 tactile_backbone: resnet18
-tactile_ckpt: encoder/checkpoints/resnet18/20251128-125750/best.pth
+tactile_ckpt: ../encoder/checkpoints/resnet18/20251128-125750/best.pth
 tactile_dilation: false

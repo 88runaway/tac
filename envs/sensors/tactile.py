@@ -190,7 +190,7 @@ def create_xensews_cfg(
         ),
         data_types=data_type
     )
-    sensor_cfg.marker_motion_sim_cfg.marker_params.num_markers = 1200
+    sensor_cfg.marker_motion_sim_cfg.marker_params.num_markers = 64
     sensor_cfg.optical_sim_cfg = sensor_cfg.optical_sim_cfg.replace(
         with_shadow=False,
         tactile_img_res=resolution,

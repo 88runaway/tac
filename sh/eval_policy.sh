@@ -7,4 +7,4 @@ GPU=${4}
 export CUDA_VISIBLE_DEVICES=$GPU
 python scripts/eval_policy.py $TASK_NAME $TASK_CONFIG $POLICY_CONIFG
 
-# bash eval_policy.sh ACT/deploy_policy_insert_lean 0
+# bash eval_policy.sh ACT/config/deploy 0

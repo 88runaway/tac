@@ -1,0 +1,44 @@
+# Random-touch data collection config for PCA training
+#
+# The robot opens its gripper and perturbs joint angles randomly near a prism
+# object so the tactile sensors accumulate diverse contact deformations.
+# This data is then used to train a PCA model for marker embedding (marker_emb).
+#
+# Usage:
+#   bash sh/collect_random_touch.sh [PRISM_NAME] [GPU] [EPISODE_NUM]
+#
+# PRISM_NAME choices (from collect.py): Hemisphere, Cylinder, Box, ...
+
+save_dir: ./data
+
+# --- Simulation timing ---
+# decimation=1: physics runs at full 120 Hz for accurate contact simulation
+decimation: 1
+save_frequency: 1        # save every sim step (dense contact signal)
+video_frequency: 2
+render_frequency: 0      # 0 = headless (livestream=2)
+
+# --- Collection volume ---
+episode_num: 50          # 50 episodes × ~200 actions × 3 steps = ~30k frames
+use_seed: true
+
+# --- Sensor ---
+sensor_type: gsmini
+
+# --- Episode parameters (passed through TaskCfg) ---
+# These match the TaskCfg defaults in envs/random_touch.py;
+# override here if needed.
+min_contact_frames: 20       # minimum contact frames to count as success
+contact_depth_threshold: 28.2  # mm; gsmini resting depth ~28.5 mm
+joint_noise_scale: 0.04      # radians; small perturbation around home pose
+steps_per_action: 3          # sim steps per random perturbation
+max_action_steps: 200        # perturbation steps per episode
+gripper_open_fraction: 0.35  # 0=closed 1=fully open; keep fingertips close
+max_save_frames: 600         # hard limit on saved frames per episode
+
+# --- Observations (same as contact.yml for PCA compatibility) ---
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true

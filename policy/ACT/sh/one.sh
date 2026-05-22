@@ -15,15 +15,20 @@ gpu_id=${3}
 train_config=${4:-"train_config"}
 expert_data_num=${5:-50}
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ACT_DIR="$(dirname "$SCRIPT_DIR")"
+ROOT_DIR="$(dirname "$(dirname "$ACT_DIR")")"
+
 # 如果不是 -e 模式，执行完整流程
 if [ "$skip_to_eval" = false ]; then
+    cd "$ACT_DIR"
     if [ -d "./data/sim-$task_name/$task_config-$expert_data_num" ]; then
         echo "Processed data for $task_name already exists. Skipping data processing."
     else
         echo "Processing data for $task_name..."
-        bash process_data.sh $task_name $task_config $expert_data_num
+        bash sh/process_data.sh $task_name $task_config $expert_data_num
     fi
-    bash train.sh $task_name $task_config $expert_data_num 0 $gpu_id $train_config
+    bash sh/train.sh $task_name $task_config $expert_data_num 0 $gpu_id $train_config
 fi
 
 # 执行评估部分
@@ -40,8 +45,8 @@ GPU         : $gpu_id
 =======================================${RESET}
 "
 
-cd ../../
+cd "$ROOT_DIR"
 export TRAIN_CONFIG=$train_config
 export EP_NUM=$expert_data_num
-# bash parallel_eval.sh $task_name $task_config ACT/deploy $gpu_id
-bash eval_policy.sh $task_name $task_config ACT/deploy $gpu_id
+# bash sh/parallel_eval.sh $task_name $task_config ACT/config/deploy $gpu_id
+bash sh/eval_policy.sh $task_name $task_config ACT/config/deploy $gpu_id

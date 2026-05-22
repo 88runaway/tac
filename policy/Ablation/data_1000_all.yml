@@ -39,5 +39,5 @@ tactile_names:
 lr_tactile_backbone: 0.00001
 tactile_masks: false
 tactile_backbone: resnet18
-tactile_ckpt: encoder/ablation/data_1000/resnet18/20260208-221016/best.pth
+tactile_ckpt: ../encoder/ablation/data_1000/resnet18/20260208-221016/best.pth
 tactile_dilation: false

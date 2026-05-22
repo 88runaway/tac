@@ -64,12 +64,16 @@ class CuroboPlanner:
             yml_data['robot_cfg']['kinematics']['collision_spheres'] = str(file_dir / collision_spheres)
 
         self.frame_bias = yml_data["planner"]["frame_bias"]
+        self._yml_data = yml_data
 
         self.usd_helper = UsdHelper()
         self.usd_helper.load_stage(self.task.scene.stage)
 
+        self._build_motion_gen()
+    
+    def _build_motion_gen(self):
         motion_gen_config = MotionGenConfig.load_from_robot_config(
-            robot_cfg=yml_data,
+            robot_cfg=self._yml_data,
             world_model=self.get_curr_world_cfg(),
             interpolation_dt=self.dt,
             position_threshold=0.001,
@@ -80,9 +84,15 @@ class CuroboPlanner:
         )
         self.motion_gen = MotionGen(motion_gen_config)
         self.motion_gen.warmup()
-    
+
     def reset(self):
         self.motion_gen.reset()
+
+    def rebuild(self):
+        """Fully rebuild MotionGen to recover from corrupted CUDA graph state."""
+        del self.motion_gen
+        torch.cuda.empty_cache()
+        self._build_motion_gen()
 
     def get_curr_world_cfg(self):
         # obstacles = self.usd_helper.get_obstacles_from_stage(

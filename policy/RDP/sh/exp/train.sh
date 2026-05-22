@@ -1,0 +1,1 @@
+bash policy/RDP/sh/train_ldp_marker_pipeline.sh lift_can 7

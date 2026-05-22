@@ -68,6 +68,7 @@ class CMakeBuild(build_ext):
         # use ENV variable as workaround
         self.DCMAKE_CUDA_ARCHITECTURES = os.environ.get("CMAKE_CUDA_ARCHITECTURES")
         print("cuda_architectures", self.DCMAKE_CUDA_ARCHITECTURES)
+        toolchain_file = os.environ.get("CMAKE_TOOLCHAIN_FILE")
 
         cmake_args = [
             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir,
@@ -77,6 +78,8 @@ class CMakeBuild(build_ext):
             "-DUIPC_DEV_MODE=1",
             "-DUIPC_BUILD_GUI=0",
         ]
+        if toolchain_file is not None:
+            cmake_args += ["-DCMAKE_TOOLCHAIN_FILE=" + toolchain_file]
         if self.DCMAKE_CUDA_ARCHITECTURES is not None:  # None means "use native cuda architecture"
             cmake_args += ["-DCMAKE_CUDA_ARCHITECTURES=" + self.DCMAKE_CUDA_ARCHITECTURES]
 

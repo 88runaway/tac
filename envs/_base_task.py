@@ -158,7 +158,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     use_adaptive_grasp: bool = True
     adaptive_grasp_depth_threshold = None # in mm
-    reset_time_limit: float = 120.0  # in seconds
+    reset_time_limit: float = 300.0  # in seconds
 
     cameras: list[CameraCfg] = [
         CameraCfg(
@@ -420,6 +420,25 @@ class BaseTask(UipcRLEnv):
         self._update_render()
 
         self.pre_move()
+        if not self.plan_success:
+            self.logger.warning('pre_move failed, rebuilding planner and retrying...')
+            self._robot_manager.planner.rebuild()
+            self._robot_manager._reset_idx()
+            self.plan_success = True
+            # Reset rng to the same seed so retry produces identical randomization
+            self.rng = np.random.default_rng(self.cfg.seed)
+            if self.first_frame is not None:
+                self.uipc_sim.replay_frame(self.first_frame)
+            if hasattr(self, '_reset_actors'):
+                self._reset_actors()
+            for _ in range(30):
+                self._step(is_save=False)
+            self._update_render()
+            self._actor_manager.remove_animate()
+            for _ in range(5):
+                self._step(is_save=False)
+            self._update_render()
+            self.pre_move()
         self.in_pre_move = False
 
         # update render to avoid artifacts
@@ -637,7 +656,10 @@ class BaseTask(UipcRLEnv):
                 f.unlink()
             self.tmp_save_dir.rmdir()
         if self.cfg.video_frequency > 0:
-            self.video_handler.close(result)
+            if result == 'error':
+                self.video_handler.forgive()
+            else:
+                self.video_handler.close(result)
         if result is not None:
             self.metadata['cost_step'] = self.step_count
             self.metadata['cost_time'] = time.perf_counter() - self.start_time

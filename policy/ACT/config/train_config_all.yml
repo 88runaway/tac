@@ -1,11 +1,11 @@
 # ACT-specific arguments
 state_dim: 8
 kl_weight: 10.0
-chunk_size: 50 
+chunk_size: 50
 hidden_dim: 512
 dim_feedforward: 3200
 
-temporal_agg: true 
+temporal_agg: true
 device: cuda:0
 
 # DETR parser args
@@ -30,13 +30,14 @@ pre_norm: false
 dropout: 0.1
 camera_names:
   - cam_high
+  - cam_wrist
 
 # tactile args
 tactile_names:
   - tac_left
   - tac_right
-lr_tactile_backbone: 0.0
+lr_tactile_backbone: 0.00001
 tactile_masks: false
 tactile_backbone: resnet18
-tactile_ckpt: encoder/checkpoints/resnet18/20251128-125750/best.pth
+tactile_ckpt: ../encoder/checkpoints/resnet18/20251128-125750/best.pth
 tactile_dilation: false

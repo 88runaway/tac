@@ -4,6 +4,7 @@ import sys
 sys.path.append(".")
 sys.path.append(f"./policy")
 
+import os
 import time
 import json
 import yaml
@@ -56,6 +57,16 @@ parser.add_argument(
 parser.add_argument(
     "--print_only",
     action='store_true',
+)
+parser.add_argument(
+    "--save_image",
+    action='store_true',
+    help="Save policy debug images during evaluation",
+)
+parser.add_argument(
+    "--save_video",
+    action='store_true',
+    help="Save evaluation episode videos",
 )
 AppLauncher.add_app_launcher_args(parser)
 
@@ -136,6 +147,11 @@ def eval_policy(
         task.mode = 'eval'
         try:
             task.reset(seed=seed, instructions=instructions[instruciton_type])
+            if not task.plan_success:
+                log(f'Seed {seed} pre_move planning failed after retry, skipping (not counted).')
+                task.clean_cache(result='error')
+                test_num -= 1
+                continue
             task.mean_steps = task.cfg.step_lim
             policy.reset()
             while task.take_action_cnt < task.cfg.step_lim:
@@ -202,6 +218,8 @@ def main():
     policy_name = deploy_config['policy_name']
     deploy_config['task_name'] = task_file_name
     deploy_config['task_config'] = task_config_file.stem
+    deploy_config['save_image'] = args_cli.save_image
+    deploy_config['save_video'] = args_cli.save_video
  
     deploy_config['instuction_file'] = deploy_config.get('instuction_file', task_file_name)
     if deploy_config['instuction_file'] is not None:
@@ -215,13 +233,17 @@ def main():
     policy_module = importlib.import_module(f"policy.{policy_name}")
     
     curr_time = time.strftime(r'%Y-%m-%d_%H:%M:%S')
+    model_tag = os.environ.get('CKPT_CONFIG', 'univtac')
 
     env_cfg:BaseTaskCfg = task_module.TaskCfg()
-    env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / deploy_config_file.stem / curr_time
+    env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / model_tag / deploy_config_file.stem / curr_time
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
-    env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
+    if args_cli.save_video:
+        env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
+    else:
+        env_cfg.video_frequency = 0
     env_cfg.random_texture = task_config.get("random_texture", False)
 
     env_cfg.scene.num_envs = 1
@@ -237,7 +259,6 @@ def main():
     task:BaseTask = task_module.Task(env_cfg, mode='eval')
     task_init_cost = time.perf_counter() - init_start
     
-    import os
     if os.environ.get('TRAIN_CONFIG'):
         deploy_config['train_config'] = os.environ['TRAIN_CONFIG']
     

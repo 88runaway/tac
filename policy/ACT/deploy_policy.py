@@ -18,19 +18,36 @@ class Policy(BasePolicy):
 # class Policy:
     def __init__(self, args):
         """Initialize ACT policy for TacArena deployment"""
-        # Construct checkpoint directory path
         self.train_config_name = os.environ.get('TRAIN_CONFIG', 'train_config')
         self.ep_num = os.environ.get('EP_NUM', '50')
-        ckpt_dir = Path(__file__).parent / "act_ckpt" / f"act-{args['task_name']}" / f"{args['task_config']}-{self.ep_num}" / self.train_config_name
+        # CKPT_CONFIG selects ckpt subdir (e.g. univtac / vision_only), defaults to univtac
+        ckpt_config = os.environ.get('CKPT_CONFIG', 'univtac')
+        # Use ckpt_dir from args/config/deploy.yml if provided, otherwise fall back to default layout
+        ckpt_root = os.environ.get('CKPT_ROOT', None)
+        if 'ckpt_dir' in args and args['ckpt_dir']:
+            ckpt_dir = Path(args['ckpt_dir'])
+        elif ckpt_root:
+            ckpt_dir = Path(ckpt_root) / args['task_name'] / ckpt_config
+        else:
+            ckpt_dir = Path(__file__).parent / "act_ckpt" / f"act-{args['task_name']}" / f"{args['task_config']}-{self.ep_num}" / self.train_config_name
  
         self.task_name = args['task_name']
+        self.save_image = args.get('save_image', False)
         with open(Path(__file__).parent.parent / 'task_settings.json', 'r') as f:
             task_settings = json.load(f)
         assert self.task_name in task_settings, f"Task '{self.task_name}' not found in task_settings.json"
-        self.camera_type = task_settings[self.task_name].get('camera_type', 'head')
-        print(f"Using camera type '{self.camera_type}' for task '{self.task_name}'")
+        default_camera_type = task_settings[self.task_name].get('camera_type', 'head')
+        # Allow eval.sh --vis flag to override camera type via CAMERA_TYPE_OVERRIDE env var.
+        # vis=1 sets CAMERA_TYPE_OVERRIDE=head, vis=2 sets it to all, vis=0 leaves it unset.
+        override = os.environ.get('CAMERA_TYPE_OVERRIDE', '')
+        self.camera_type = override if override in ('head', 'all') else default_camera_type
+        if override in ('head', 'all'):
+            print(f"Using camera type '{self.camera_type}' for task '{self.task_name}' "
+                  f"(overridden from '{default_camera_type}' via CAMERA_TYPE_OVERRIDE)")
+        else:
+            print(f"Using camera type '{self.camera_type}' for task '{self.task_name}'")
 
-        with open(Path(__file__).parent / f'{self.train_config_name}.yml', 'r') as f:
+        with open(Path(__file__).parent / 'config' / f'{self.train_config_name}.yml', 'r') as f:
             train_config = yaml.load(f, Loader=yaml.FullLoader)
         
         train_config.update({
@@ -84,8 +101,8 @@ class Policy(BasePolicy):
         else:
             cam_high = camera_transform(observation["observation"][self.camera_type]["rgb"])
 
-        left_tac = tactile_transform(observation["tactile"]["left_gsmini"]["rgb_marker"])
-        right_tac = tactile_transform(observation["tactile"]["right_gsmini"]["rgb_marker"])
+        left_tac = tactile_transform(observation["tactile"]["left_tactile"]["rgb_marker"])
+        right_tac = tactile_transform(observation["tactile"]["right_tactile"]["rgb_marker"])
         
         # Extract joint positions (8D: 7 arm + 1 gripper)
         qpos = observation["embodiment"]["joint"][:8]
@@ -111,7 +128,7 @@ class Policy(BasePolicy):
         
         # Get action from ACT model (returns (1, 8) numpy array)
         obs = self.encode_obs(observation)
-        if self.model.t % 10 == 0:
+        if self.save_image and self.model.t % 10 == 0:
             self.save(task.get_frame_shot(observation), task.take_action_cnt)
         action = self.model.get_action(obs).reshape(-1)
         action = torch.from_numpy(action).to(task.device).float()

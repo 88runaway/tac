@@ -1,3 +1,4 @@
+import os
 import sys
 sys.path.append('.')
 
@@ -8,12 +9,11 @@ import torch
 import argparse
 import traceback
 from pathlib import Path
-from isaaclab.app import AppLauncher
 from typing import TYPE_CHECKING, Literal
 
 # add argparse arguments
 parser = argparse.ArgumentParser(
-    description="Collect data"
+    description="Collect contact data"
 )
 parser.add_argument(
     "task",
@@ -26,9 +26,22 @@ parser.add_argument(
     help="Config file name",
     default="contact.yml"
 )
+parser.add_argument(
+    "--gpu",
+    type=str,
+    default=None,
+    help="GPU device index (sets CUDA_VISIBLE_DEVICES)",
+)
+
+# Parse --gpu before importing isaaclab so CUDA_VISIBLE_DEVICES is set first
+args_cli, _ = parser.parse_known_args()
+if args_cli.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = args_cli.gpu
+
+from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
 
-# parse the arguments
+# Full parse
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
 args_cli.num_envs = 1
@@ -146,6 +159,17 @@ def main():
     env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     env_cfg.obs_data_type = task_config.get("observations", {})
+
+    # Forward any extra task-specific fields present in the yml to env_cfg
+    # (e.g. random_touch fields like min_contact_frames, joint_noise_scale).
+    _COMMON_KEYS = {
+        "save_dir", "decimation", "save_frequency", "video_frequency",
+        "render_frequency", "observations", "episode_num", "use_seed",
+        "sensor_type", "random_texture",
+    }
+    for key, value in task_config.items():
+        if key not in _COMMON_KEYS and hasattr(env_cfg, key):
+            setattr(env_cfg, key, value)
 
     env_cfg.scene.num_envs = 1
     env_cfg.sim.device = args_cli.device if args_cli.device is not None \
