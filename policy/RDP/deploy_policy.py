@@ -242,8 +242,16 @@ class Policy(BasePolicy):
             flat = offset.reshape(-1).astype(np.float32)  # (N*2,)
             return self.pca_reducer.reduce(flat)      # (K,)
 
-        cam_high = img_to_chw(observation["observation"][self.camera_type]["rgb"])
+        # camera_type="all" means dual-cam mode: head -> cam_high, wrist -> cam_wrist.
+        # camera_type="head"/"wrist" means single-cam, only cam_high is used.
+        _cam_key = "head" if self.camera_type == "all" else self.camera_type
+        cam_high = img_to_chw(observation["observation"][_cam_key]["rgb"])
         qpos = observation["embodiment"]["joint"][:8].cpu().numpy().astype(np.float32)
+
+        # dual-cam: also encode wrist camera
+        cam_wrist = None
+        if self.camera_type == "all":
+            cam_wrist = img_to_chw(observation["observation"]["wrist"]["rgb"])
 
         if self.tactile_mode == "rgb":
             tac_left  = img_to_chw(observation["tactile"]["left_tactile"]["rgb_marker"])
@@ -263,6 +271,9 @@ class Policy(BasePolicy):
                 "tac_right_emb": tac_right_emb,
                 "qpos":          qpos,
             }
+
+        if cam_wrist is not None:
+            obs_dict_np["cam_wrist"] = cam_wrist
 
         return obs_dict_np
 

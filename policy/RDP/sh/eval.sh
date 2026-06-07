@@ -7,6 +7,7 @@
 #   e.g. "univtac" -> CKPT_ROOT/insert_HDMI/univtac/checkpoints/latest.ckpt
 
 task_name=${1:-lift_bottle}
+task_config=${2:-demo}
 model_config=${2:-univtac}
 gpu_id=${3:-0}
 save_video=${4:-true}
@@ -32,8 +33,6 @@ SAVE_ARGS=""
 cd "$ROOT_DIR"
 
 source /data1/zjb/UniVTAC/IsaacLab/_isaac_sim/setup_conda_env.sh
-
-task_config=demo
 
 PYTHONWARNINGS=ignore::UserWarning \
 CUDA_VISIBLE_DEVICES=${gpu_id} python scripts/eval_policy.py \

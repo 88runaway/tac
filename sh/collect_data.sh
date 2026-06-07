@@ -3,7 +3,7 @@
 TASK_NAME=${1:-insert_hole}
 CONFIG_NAME=${2:-demo}
 GPU=${3:-0}
-START_SEED=${4:--0}
+START_SEED=${4:--1}
 MAX_SEED=${5:--1}
 EPISODE=${6:--1}
 

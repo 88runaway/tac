@@ -11,6 +11,9 @@
 # Prerequisites:
 #   Run process_data_marker.sh first to build the marker zarr dataset.
 #
+# Whether to use dual-camera training config is determined automatically from
+# UniVTAC/policy/task_settings.json: camera_type="all" → dual_cam (cam_high + cam_wrist).
+#
 # Options (environment variables):
 #   RDP_ROOT      path to reactive_diffusion_policy repo (default: /data1/zjb/reactive_diffusion_policy)
 #   AT_EPOCHS     AT-VAE training epochs, overrides config (default: use config value)
@@ -22,7 +25,22 @@ task_name=${1:?'Usage: train_ldp_marker_pipeline.sh <task_name> [gpu_id]'}
 gpu_id=${2:-0}
 
 RDP_ROOT="${RDP_ROOT:-/data1/zjb/reactive_diffusion_policy}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UNIVTAC_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 ZARR_DIR="${RDP_ROOT}/data/univtac_${task_name}_marker_zarr"
+
+# Auto-detect dual_cam from task_settings.json
+TASK_SETTINGS="${UNIVTAC_ROOT}/policy/task_settings.json"
+dual_cam="false"
+if [ -f "$TASK_SETTINGS" ]; then
+    cam_type=$(python3 -c "
+import json
+with open('${TASK_SETTINGS}') as f:
+    s = json.load(f)
+print(s.get('${task_name}', {}).get('camera_type', 'head'))
+" 2>/dev/null)
+    [ "$cam_type" = "all" ] && dual_cam="true"
+fi
 
 # Fixed output directories so we can reliably locate checkpoints after training
 DATESTAMP="$(date +%Y.%m.%d)"
@@ -40,7 +58,7 @@ if [ ! -d "${ZARR_DIR}/replay_buffer.zarr" ]; then
 fi
 
 echo "========================================================"
-echo "  LDP Marker Pipeline: ${task_name}  GPU: ${gpu_id}"
+echo "  LDP Marker Pipeline: ${task_name}  GPU: ${gpu_id}  dual_cam: ${dual_cam}"
 echo "  Data:    ${ZARR_DIR}"
 echo "  AT dir:  ${RDP_ROOT}/${AT_RUN_DIR}"
 echo "  LDP dir: ${RDP_ROOT}/${LDP_RUN_DIR}"
@@ -54,12 +72,19 @@ cd "${RDP_ROOT}"
 echo ""
 echo "=== Stage 1/2: Training AT-VAE (marker emb) ==="
 
+AT_TASK_CFG="univtac_at_marker_emb"
+LDP_TASK_CFG="univtac_ldp_marker_emb"
+if [ "$dual_cam" = "true" ]; then
+    AT_TASK_CFG="univtac_at_marker_emb_dual_cam"
+    LDP_TASK_CFG="univtac_ldp_marker_emb_dual_cam"
+fi
+
 AT_EXTRA_ARGS=""
 [ -n "${AT_EPOCHS:-}" ] && AT_EXTRA_ARGS="${AT_EXTRA_ARGS} training.num_epochs=${AT_EPOCHS}"
 
 CUDA_VISIBLE_DEVICES=${gpu_id} python train.py \
     --config-name=train_at_workspace \
-    task=univtac_at_marker_emb \
+    task=${AT_TASK_CFG} \
     at=at_univtac \
     "task.dataset_path='${ZARR_DIR}'" \
     training.device="cuda:0" \
@@ -103,7 +128,7 @@ LDP_EXTRA_ARGS=""
 
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=${gpu_id} python train.py \
     --config-name=train_latent_diffusion_unet_real_image_workspace \
-    task=univtac_ldp_marker_emb \
+    task=${LDP_TASK_CFG} \
     at=at_univtac \
     "task.dataset_path='${ZARR_DIR}'" \
     "at_load_dir='${AT_CKPT}'" \

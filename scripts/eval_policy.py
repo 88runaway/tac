@@ -221,7 +221,7 @@ def main():
     deploy_config['save_image'] = args_cli.save_image
     deploy_config['save_video'] = args_cli.save_video
  
-    deploy_config['instuction_file'] = deploy_config.get('instuction_file', task_file_name)
+    deploy_config['instuction_file'] = deploy_config.get('instuction_file') or task_file_name
     if deploy_config['instuction_file'] is not None:
         instructions, _ = get_config(
             deploy_config['instuction_file'], default_root=Path(__file__).parent.parent / 'instructions', type='json'
@@ -236,7 +236,7 @@ def main():
     model_tag = os.environ.get('CKPT_CONFIG', 'univtac')
 
     env_cfg:BaseTaskCfg = task_module.TaskCfg()
-    env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / model_tag / deploy_config_file.stem / curr_time
+    env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / model_tag / curr_time
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)

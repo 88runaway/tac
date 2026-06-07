@@ -1,12 +1,12 @@
 # grasp_classify
-CKPT_DIR=/data1/zjb/reactive_diffusion_policy/data/outputs/2026.05.21/19.02.47_train_latent_diffusion_unet_image_univtac_ldp_marker_emb \
-PCA_DIR=/data1/zjb/reactive_diffusion_policy/data/PCA_Transform_UniVTAC_grasp_classify \
-bash policy/RDP/sh/eval.sh grasp_classify univtac 1 true
+CKPT_DIR=/data1/zjb/reactive_diffusion_policy/data/outputs/2026.05.25/01.48.02_train_latent_diffusion_unet_image_univtac_ldp_marker_emb_dual_cam \
+PCA_DIR=/data1/zjb/reactive_diffusion_policy/data/PCA_Transform_UniVTAC_lift_can \
+bash policy/RDP/sh/eval.sh lift_can univtac 4 true
 
 # pull_out_key
-CKPT_DIR=/data1/zjb/reactive_diffusion_policy/data/outputs/2026.05.21/19.48.39_train_ldp_marker_emb_pull_out_key \
-PCA_DIR=/data1/zjb/reactive_diffusion_policy/data/PCA_Transform_UniVTAC_pull_out_key \
-bash policy/RDP/sh/eval.sh pull_out_key univtac 2 true
+CKPT_DIR=/data1/zjb/reactive_diffusion_policy/data/outputs/2026.05.25/01.57.00_train_latent_diffusion_unet_image_univtac_ldp_marker_emb_dual_cam \
+PCA_DIR=/data1/zjb/reactive_diffusion_policy/data/PCA_Transform_UniVTAC_insert_tube \
+bash policy/RDP/sh/eval.sh insert_tube univtac 7 true
 
 # insert_hole
 CKPT_DIR=/data1/zjb/reactive_diffusion_policy/data/outputs/2026.05.21/19.59.41_train_ldp_marker_emb_insert_hole \

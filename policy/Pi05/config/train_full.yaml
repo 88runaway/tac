@@ -1,0 +1,79 @@
+# ─── UniVTAC Pi0.5 Full Fine-tuning Configuration ─────────────────────────────
+#
+# Full parameter fine-tuning (no LoRA). Requires ~4×A100 or similar.
+# For single-GPU or memory-constrained setups, use train_lora.yaml instead.
+#
+# Usage:
+#   bash policy/Pi05/sh/train.sh lift_can 0 train_full
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── UniVTAC Model Type (parsed by train.sh, stripped before lerobot) ────────
+# Controls input modality:
+#   vision_only : head + wrist cameras only (default)
+#   tactile     : vision + left/right GelSight Mini rgb_marker tactile images
+model: vision_only
+
+# ─── Dataset ─────────────────────────────────────────────────────────────────
+# ⚠ All fields marked [TASK] are overridden at runtime by train.sh
+#   based on the task_name argument and task_settings.json.
+dataset:
+  repo_id: "univtac/__TASK__"          # [TASK] → univtac/<task_name>
+  root: "/data1/zjb/UniVTAC/data_lerobot/__TASK__"  # [TASK] → data_lerobot/<task_name>
+  video_backend: "pyav"
+
+# ─── Policy ──────────────────────────────────────────────────────────────────
+policy:
+  type: "pi05"
+  pretrained_path: "/data1/zjb/ckpt/lerobot/pi05_base"
+
+  chunk_size: 50
+  n_action_steps: 32
+
+  image_resolution: [224, 224]
+
+  dtype: "bfloat16"
+  gradient_checkpointing: true
+  compile_model: false        # Disabled: torch.compile + CUDA Graph + RTX 4000 multi-GPU causes invalid argument error
+
+  
+  freeze_vision_encoder: false
+  train_expert_only: false
+
+  normalization_mapping:
+    VISUAL: "IDENTITY"
+    STATE: "QUANTILES"
+    ACTION: "QUANTILES"
+
+
+  empty_cameras: 2            # [TASK] read from task_settings.json by train.sh
+  push_to_hub: false
+
+# ─── Training ────────────────────────────────────────────────────────────────
+output_dir: "./outputs/pi05___TASK___train_full"   # [TASK] overridden by train.sh
+job_name: "pi05___TASK___train_full"              # [TASK] overridden by train.sh
+seed: 42
+
+batch_size: 1
+num_workers: 4
+prefetch_factor: 2
+
+steps: 10000
+save_freq: 2500
+save_checkpoint: true
+keep_last_n_checkpoints: 3
+eval_freq: 100000
+log_freq: 50
+
+use_policy_training_preset: true
+
+# ─── Observation Key Mapping ─────────────────────────────────────────────────
+# [TASK] Overridden per task by train.sh from task_settings.json.
+rename_map:
+  "observation.images.head": "observation.images.base_0_rgb"
+
+# ─── WandB Logging ───────────────────────────────────────────────────────────
+wandb:
+  enable: false
+  project: "univtac-pi05-__TASK__"   # [TASK] overridden by train.sh
+  entity: null

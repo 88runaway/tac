@@ -15,8 +15,10 @@ task_name=${1:?'Usage: train_ldp_marker.sh <task_name> <at_ckpt_dir> [gpu_id]'}
 at_ckpt_dir=${2:?'Usage: train_ldp_marker.sh <task_name> <at_ckpt_dir> [gpu_id]'}
 gpu_id=${3:-0}
 
+UNIVTAC_ROOT="${UNIVTAC_ROOT:-/data1/zjb/UniVTAC}"
 RDP_ROOT="${RDP_ROOT:-/data1/zjb/reactive_diffusion_policy}"
 ZARR_DIR="${RDP_ROOT}/data/univtac_${task_name}_marker_zarr"
+TASK_SETTINGS="${UNIVTAC_ROOT}/policy/task_settings.json"
 
 if [ ! -d "${ZARR_DIR}/replay_buffer.zarr" ]; then
     echo "Error: Marker zarr not found at ${ZARR_DIR}/replay_buffer.zarr"
@@ -29,16 +31,32 @@ if [ ! -e "$at_ckpt_dir" ]; then
     exit 1
 fi
 
+# Read camera_type from task_settings.json to select single/dual camera task config
+camera_type=$(python3 -c "
+import json, sys
+with open('${TASK_SETTINGS}') as f:
+    settings = json.load(f)
+task = settings.get('${task_name}', {})
+print(task.get('camera_type', 'head'))
+")
+
+if [ "$camera_type" = "all" ]; then
+    TASK_CONFIG="univtac_ldp_marker_emb_dual_cam"
+else
+    TASK_CONFIG="univtac_ldp_marker_emb"
+fi
+
 cd "$RDP_ROOT"
 
 echo "=== Latent Diffusion Policy Training (marker emb) ==="
 echo "  Task:          ${task_name}  |  GPU: ${gpu_id}"
+echo "  Camera type:   ${camera_type}  ->  task config: ${TASK_CONFIG}"
 echo "  Data:          ${ZARR_DIR}"
 echo "  AT checkpoint: ${at_ckpt_dir}"
 
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=${gpu_id} python train.py \
     --config-name=train_latent_diffusion_unet_real_image_workspace \
-    task=univtac_ldp_marker_emb \
+    task=${TASK_CONFIG} \
     at=at_univtac \
     "task.dataset_path='${ZARR_DIR}'" \
     "at_load_dir='${at_ckpt_dir}'" \

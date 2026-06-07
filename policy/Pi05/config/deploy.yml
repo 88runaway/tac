@@ -1,0 +1,18 @@
+# Pi0.5 部署配置（由 eval_policy.py 加载）
+#
+# 评估的运行时参数（task、checkpoint、GPU、episode 数、seed 等）
+# 统一在 config/eval.yaml 中配置，由 sh/eval.sh 读取并通过
+# 环境变量 CKPT_ROOT / CKPT_CONFIG / CKPT_DIR 传递给 deploy_policy.py。
+#
+# 本文件只保存策略身份信息与静态默认值。
+
+policy_name: Pi05
+
+# ckpt_dir: 运行时由 deploy_policy.py 从 CKPT_ROOT/CKPT_CONFIG 或 CKPT_DIR 解析
+ckpt_dir: null
+
+# instruction_type 在 eval.yaml 中统一配置；此处仅作备份默认值
+instruction_type: seen
+
+# instuction_file: null 表示使用 instructions/<task_name>.json
+instuction_file: null

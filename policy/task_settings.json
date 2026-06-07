@@ -1,42 +1,130 @@
 {
     "insert_HDMI": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "lift_bottle": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "lift_can": {
         "camera_type": "all",
+        "empty_cameras": 1,
+        "rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.wrist": "observation.images.left_wrist_0_rgb"
+        },
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_left": "observation.images.right_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.extra_0_rgb"
+        },
         "downsample": 1
     },
     "pull_out_key": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "put_bottle_in_shelf": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "insert_card": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "insert_hole": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "insert_lean": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     },
     "insert_tube": {
         "camera_type": "all",
+        "empty_cameras": 1,
+        "rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.wrist": "observation.images.left_wrist_0_rgb"
+        },
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_left": "observation.images.right_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.extra_0_rgb"
+        },
         "downsample": 1
     },
     "grasp_classify": {
         "camera_type": "head",
+        "empty_cameras": 2,
+        "rename_map": {"observation.images.head": "observation.images.base_0_rgb"},
+        "tactile_empty_cameras": 0,
+        "tactile_rename_map": {
+            "observation.images.head": "observation.images.base_0_rgb",
+            "observation.images.tactile_left": "observation.images.left_wrist_0_rgb",
+            "observation.images.tactile_right": "observation.images.right_wrist_0_rgb"
+        },
         "downsample": 1
     }
 }

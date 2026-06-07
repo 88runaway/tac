@@ -58,6 +58,17 @@ class Policy(BasePolicy):
             "num_epochs": 1
         })
         
+        # Allow eval.sh to override temporal_agg via TEMPORAL_AGG_OVERRIDE env var
+        te_override = os.environ.get('TEMPORAL_AGG_OVERRIDE', '')
+        if te_override == 'true':
+            train_config['temporal_agg'] = True
+            print("Temporal ensemble overridden to: ENABLED (via TEMPORAL_AGG_OVERRIDE)")
+        elif te_override == 'false':
+            train_config['temporal_agg'] = False
+            print("Temporal ensemble overridden to: DISABLED (via TEMPORAL_AGG_OVERRIDE)")
+        else:
+            print(f"Temporal ensemble: using config default ({train_config.get('temporal_agg', False)})")
+
         # Initialize ACT model (RoboTwin_Config=None for TacArena)
         self.model = ACT(train_config)
         print(f"ACT policy loaded from {ckpt_dir}")

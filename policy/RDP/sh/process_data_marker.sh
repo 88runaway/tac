@@ -15,6 +15,10 @@
 #   $UNIVTAC_DATA/<task_name>/<task_config>/hdf5/
 # where UNIVTAC_DATA defaults to UniVTAC/data (auto-detected from script location)
 # Override via: UNIVTAC_DATA=/path/to/data bash process_data_marker.sh ...
+#
+# Whether to include wrist camera is determined automatically from task_settings.json:
+#   camera_type = "all"  → dual-cam mode (--wrist_cam is passed to the converter)
+#   otherwise            → single-cam mode
 
 task_name=${1:-insert_HDMI}
 num_episodes=${2:-100}
@@ -26,6 +30,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RDP_ROOT="${RDP_ROOT:-/data1/zjb/reactive_diffusion_policy}"
 UNIVTAC_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 UNIVTAC_DATA="${UNIVTAC_DATA:-${UNIVTAC_ROOT}/data}"
+
+# Auto-detect dual_cam from task_settings.json
+TASK_SETTINGS="${UNIVTAC_ROOT}/policy/task_settings.json"
+dual_cam="false"
+if [ -f "$TASK_SETTINGS" ]; then
+    cam_type=$(python3 -c "
+import json, sys
+with open('${TASK_SETTINGS}') as f:
+    s = json.load(f)
+print(s.get('${task_name}', {}).get('camera_type', 'head'))
+" 2>/dev/null)
+    [ "$cam_type" = "all" ] && dual_cam="true"
+fi
+echo "  camera_type: ${cam_type:-unknown}  →  dual_cam: ${dual_cam}"
 
 INPUT_DIR="${UNIVTAC_DATA}/${task_name}/${task_config}/hdf5"
 PCA_DIR="${RDP_ROOT}/data/PCA_Transform_UniVTAC_${task_name}"
@@ -55,6 +73,9 @@ echo ""
 echo "=== Step 2: Convert HDF5 -> zarr with marker PCA embeddings ==="
 echo "  Output: $OUTPUT_DIR"
 
+WRIST_ARGS=""
+[ "$dual_cam" = "true" ] && WRIST_ARGS="--wrist_cam"
+
 python "${RDP_ROOT}/scripts/convert_univtac_to_zarr.py" \
     --input_dir "$INPUT_DIR" \
     --output_dir "$OUTPUT_DIR" \
@@ -62,7 +83,8 @@ python "${RDP_ROOT}/scripts/convert_univtac_to_zarr.py" \
     --input_format raw \
     --downsample "$downsample" \
     --tactile_mode marker_emb \
-    --pca_dir "$PCA_DIR"
+    --pca_dir "$PCA_DIR" \
+    ${WRIST_ARGS}
 
 if [ $? -ne 0 ]; then
     echo "Error: Zarr conversion failed."

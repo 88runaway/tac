@@ -1,10 +1,11 @@
 task_name=${1:-grasp_classify}
 model_config=${2:-univtac}   # univtac | vision_only
-gpu_id=${3:-7}
+gpu_id=${3:-5}
 save_image=${4:-false}       # true | false
 save_video=${5:-true}        # true | false
 seed=${6:-}                  # optional: run single seed
 vis=${7:-0}                  # 0=task default, 1=force head only, 2=force head+wrist
+temporal_agg=${8:-false}          # true | false | (empty=use config default)
 task_config=demo
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +21,15 @@ elif [ "$vis" = "2" ]; then
     export CAMERA_TYPE_OVERRIDE=all
 else
     unset CAMERA_TYPE_OVERRIDE
+fi
+
+# temporal_agg: "true"/"false" override, empty=use config default
+if [ "$temporal_agg" = "true" ]; then
+    export TEMPORAL_AGG_OVERRIDE=true
+elif [ "$temporal_agg" = "false" ]; then
+    export TEMPORAL_AGG_OVERRIDE=false
+else
+    unset TEMPORAL_AGG_OVERRIDE
 fi
 
 export CKPT_CONFIG=${model_config}

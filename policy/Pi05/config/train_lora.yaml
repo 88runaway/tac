@@ -1,0 +1,113 @@
+# ─── UniVTAC Pi0.5 LoRA Fine-tuning Configuration ─────────────────────────────
+#
+# This config is loaded via --config_path by lerobot.scripts.lerobot_train
+# using draccus. CLI arguments in train.sh override these values where
+# they conflict (task-specific: dataset.repo_id, dataset.root, output_dir,
+# job_name, policy.empty_cameras, rename_map).
+#
+# Optimizer/scheduler: use_policy_training_preset=true (default) means
+# PI05Config presets are used automatically:
+#   lr=2.5e-5, AdamW(betas=(0.9,0.95), wd=0.01), cosine warmup 1k→decay 30k steps.
+# To override lr, add: --use_policy_training_preset=false --optimizer.lr=5e-5
+#
+# Usage:
+#   bash policy/Pi05/sh/train.sh lift_can 0 train_lora
+#   bash policy/Pi05/sh/train.sh lift_can 0 train_lora --steps=10000
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── UniVTAC Model Type (parsed by train.sh, stripped before lerobot) ────────
+# Controls input modality:
+#   vision_only : head + wrist cameras only (default)
+#   tactile     : vision + left/right GelSight Mini rgb_marker tactile images
+model: vision_only
+
+# ─── Dataset ─────────────────────────────────────────────────────────────────
+# ⚠ All fields below marked [TASK] are overridden at runtime by train.sh
+#   based on the task_name argument and task_settings.json.
+#   Do NOT edit these placeholders manually.
+dataset:
+  repo_id: "univtac/__TASK__"          # [TASK] → univtac/<task_name>
+  root: "/data1/zjb/UniVTAC/data_lerobot/__TASK__"  # [TASK] → data_lerobot/<task_name>
+  video_backend: "pyav"
+
+# ─── Policy ──────────────────────────────────────────────────────────────────
+policy:
+  type: "pi05"
+  pretrained_path: "/data1/zjb/ckpt/lerobot/pi05_base"
+
+  # Sequence lengths: keep chunk_size=50 to match pretraining
+  chunk_size: 50
+  n_action_steps: 32       # Execute 10 steps per inference call (0.67s at 15fps)
+
+  # Image resolution (must match dataset conversion)
+  image_resolution: [224, 224]
+
+  # Precision & memory
+  dtype: "bfloat16"
+  gradient_checkpointing: true
+  compile_model: false
+
+  
+  freeze_vision_encoder: true
+  train_expert_only: false
+
+  # Normalization: QUANTILES maps 1%~99% range to [-1, 1], better than MEAN_STD for joint angles.
+  # Requires running augment_dataset_quantile_stats.py first:
+  #   cd /data1/zjb/lerobot && python src/lerobot/scripts/augment_dataset_quantile_stats.py \
+  #       --repo-id univtac/<task> --root /data1/zjb/UniVTAC/data_lerobot/<task>
+  normalization_mapping:
+    VISUAL: "IDENTITY"
+    STATE: "QUANTILES"
+    ACTION: "QUANTILES"
+
+  # [TASK] empty_cameras is read from task_settings.json by train.sh:
+  #   head-only tasks → 2,  head+wrist tasks → 1
+  empty_cameras: 2
+
+  # Disable pushing to HuggingFace Hub after training
+  push_to_hub: false
+
+# ─── PEFT / LoRA ─────────────────────────────────────────────────────────────
+# Targets: action expert attention (q/v_proj) + projection layers.
+# Note: pi05 uses time_mlp_in/out (NOT action_time_mlp_in/out from pi0 default).
+peft:
+  method_type: "LORA"
+  r: 64
+  lora_alpha: 64
+  target_modules: "(.*\\.gemma_expert\\..*\\.self_attn\\.(q|v)_proj|model\\.(action_in_proj|action_out_proj|time_mlp_in|time_mlp_out))"
+
+# ─── Training ────────────────────────────────────────────────────────────────
+output_dir: "./outputs/pi05___TASK___train_lora"   # [TASK] overridden by train.sh
+job_name: "pi05___TASK___train_lora"              # [TASK] overridden by train.sh
+seed: 42
+
+batch_size: 8
+num_workers: 4
+prefetch_factor: 2
+
+steps: 10000
+save_freq: 2000
+save_checkpoint: true
+keep_last_n_checkpoints: 5
+# eval_freq > steps disables in-loop eval (no gym env for UniVTAC sim during training)
+eval_freq: 200000
+log_freq: 50
+
+# use_policy_training_preset=true: lerobot uses PI05Config.get_optimizer_preset()
+# and get_scheduler_preset() automatically. Do not set optimizer/scheduler here
+# unless you want to override the preset.
+use_policy_training_preset: true
+
+# ─── Observation Key Mapping ─────────────────────────────────────────────────
+# [TASK] Overridden per task by train.sh from task_settings.json.
+#   head-only:      {"observation.images.head": "observation.images.base_0_rgb"}
+#   head+wrist:     above + {"observation.images.wrist": "observation.images.left_wrist_0_rgb"}
+rename_map:
+  "observation.images.head": "observation.images.base_0_rgb"
+
+# ─── WandB Logging ───────────────────────────────────────────────────────────
+wandb:
+  enable: true
+  project: "univtac-pi05-__TASK__"   # [TASK] overridden by train.sh → univtac-pi05-<task_name>
+  entity: null

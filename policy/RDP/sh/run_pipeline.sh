@@ -39,8 +39,10 @@
 #
 # Examples:
 #   # LDP 完整流程（rgb 触觉）
-#   bash UniVTAC/policy/RDP/sh/run_pipeline.sh insert_HDMI ldp 0 100
-#
+# #   # lift_can（双相机，自动使用 dual_cam 配置）
+# cd /data1/zjb/UniVTAC
+# bash policy/RDP/sh/run_pipeline.sh lift_can ldp_marker 1 100
+# bash policy/RDP/sh/run_pipeline.sh insert_tube ldp_marker 2 100
 #   # LDP marker 完整流程
 #   bash UniVTAC/policy/RDP/sh/run_pipeline.sh insert_HDMI ldp_marker 0 100
 #
@@ -347,7 +349,7 @@ if [ "$SKIP_EVAL" = "0" ]; then
             CUDA_VISIBLE_DEVICES="${gpu_id}" \
             python scripts/eval_policy.py \
                 "${task_name}" \
-                demo \
+                univtac \
                 "${DEPLOY_CONFIG}" \
                 ${SAVE_ARGS} \
                 ${HEADLESS_ARGS}

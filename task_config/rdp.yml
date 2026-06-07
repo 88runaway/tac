@@ -1,0 +1,22 @@
+save_dir: ./data
+
+# decimation=2: each take_action advances 2×8.33ms=16.67ms of physics time,
+# matching the training data frame interval (save_frequency=2, decimation=1 → 16.67ms).
+decimation: 2
+
+save_frequency: 2
+video_frequency: 2
+render_frequency: 0
+
+random_texture: false
+
+use_seed: true
+episode_num: 100
+
+sensor_type: gsmini
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true

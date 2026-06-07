@@ -1,0 +1,81 @@
+# ─── UniVTAC Pi0.5 Evaluation Configuration ──────────────────────────────────
+#
+# 所有评估参数集中在此文件，eval.sh 从中读取。
+#
+# Usage:
+#   bash policy/Pi05/sh/eval.sh                        # 使用本文件全部默认值
+#   bash policy/Pi05/sh/eval.sh lift_bottle            # 覆盖 task_name
+#   bash policy/Pi05/sh/eval.sh lift_bottle train_lora # 覆盖 task + ckpt_config
+#
+# ─── 输入模态 ─────────────────────────────────────────────────────────────────
+# vision_only : 仅使用 head + wrist 相机（默认）
+# tactile     : 在视觉基础上增加左右 GelSight Mini rgb_marker 触觉图像
+model: tactile
+
+# ─── 任务 ────────────────────────────────────────────────────────────────────
+task_name: lift_bottle          # 要评估的任务（task_settings.json 中的 key）
+task_config: demo               # Isaac Lab 任务配置文件名（task_config/<name>.yml）
+
+# ─── Checkpoint ───────────────────────────────────────────────────────────────
+# ckpt_root 为空时，自动从训练输出目录推断：
+#   <univtac_root>/outputs/pi05_<task_name>_<ckpt_config>/checkpoints/last/pretrained_model
+ckpt_root: ""
+ckpt_config: train_lora         # 训练配置名，用于定位 checkpoint 子目录
+ckpt_dir: ""                    # 直接指定 checkpoint 路径（非空时覆盖其他所有 ckpt_* 设置）
+# ckpt_timestamp: 指定训练运行的时间戳子目录（空=自动选最新）
+# 例：ckpt_timestamp: "2026-06-06_00:07:00"
+ckpt_timestamp: ""
+# ckpt_step: 指定要评估的训练步数，null = 使用 last（最新保存的 checkpoint）
+# 例：ckpt_step: 5000  → 加载 checkpoints/005000/pretrained_model
+ckpt_step: null
+
+# ─── 硬件 ─────────────────────────────────────────────────────────────────────
+gpu_id: "0"                     # CUDA_VISIBLE_DEVICES，多卡示例："0,1"
+
+# ─── 评估规模 ─────────────────────────────────────────────────────────────────
+total_num: 100                  # 评估总 episode 数
+start_seed: -1                  # 起始 seed（-1 = 使用框架默认值 1000000*(1+deploy_seed)）
+max_seed: -1                    # 终止 seed（-1 = 不限，直到 total_num 达到为止）
+
+# ─── 推理参数 ─────────────────────────────────────────────────────────────────
+# n_action_steps: 每次推理后连续执行的动作步数（action chunking）
+#   - null 表示沿用 checkpoint 保存的训练值（train_lora.yaml 里的 n_action_steps）
+#   - 设为更小的值（如 1）可降低执行延迟，但推理频率更高
+n_action_steps: 50           # null = 使用 checkpoint 中保存的值（默认 10）
+
+# num_inference_steps: flow matching 去噪步数
+#   - null = 使用 checkpoint 保存的值（pi05 默认 10）
+#   - 减小（如 5）可加速推理，增大（如 20）可提升动作质量
+num_inference_steps: 50
+
+# decimation: 每次 take_action 执行的 physics substep 数
+#   仿真 dt=1/120s，decimation=N → 每次动作执行 N/120 秒
+#   - 1 = 120Hz 动作频率（默认，与 demo.yml 一致）
+#   - 4 = 30Hz 动作频率（与 subsample=2 的 30fps 训练数据对齐）
+#   - 8 = 15Hz 动作频率（与 subsample=4 的 15fps 训练数据对齐）
+#   - null = 使用 task_config (demo.yml) 中的默认值
+decimation: 2             # 4 = 30Hz，匹配训练数据帧率
+
+# ─── RTC 实时分块推理 ────────────────────────────────────────────────────────
+# rtc_enabled: true = 启用 Real-Time Chunking，改善 chunk 边界处机械臂抽动问题。
+#   原理：每次重新推理时，把上一 chunk 未执行的尾部（prev_chunk_left_over）传入
+#   flow matching 去噪过程，引导新 chunk 的开头与旧 chunk 末尾保持连续。
+#   注意：rtc_enabled=true 要求 n_action_steps < chunk_size（默认 50），否则无效。
+#   推荐：n_action_steps=25，rtc_execution_horizon=25（= chunk_size - n_action_steps）
+rtc_enabled: false
+# rtc_execution_horizon: 用于引导的步数窗口，建议 = chunk_size - n_action_steps
+rtc_execution_horizon: 12
+
+# ─── 指令 ─────────────────────────────────────────────────────────────────────
+instruction_type: seen          # seen | unseen
+
+# ─── 输出 ─────────────────────────────────────────────────────────────────────
+save_video: true                # 保存每个 episode 的评估视频
+save_image: false               # 在推理时每 10 步保存一张 debug 截图
+
+# ─── 专家检验 ─────────────────────────────────────────────────────────────────
+expert_check: false             # 每个 seed 先用专家策略验证可达性
+
+# ─── 环境路径 ──────────────────────────────────────────────────────────────────
+lerobot_src: "/data1/zjb/lerobot/src"
+torch_home: "/data1/zjb/ckpt/UniVTAC/torch"

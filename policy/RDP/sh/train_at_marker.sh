@@ -10,8 +10,10 @@ task_name=${1:-insert_HDMI}
 gpu_id=${2:-7}
 n_components=${3:-15}
 
+UNIVTAC_ROOT="${UNIVTAC_ROOT:-/data1/zjb/UniVTAC}"
 RDP_ROOT="${RDP_ROOT:-/data1/zjb/reactive_diffusion_policy}"
 ZARR_DIR="${RDP_ROOT}/data/univtac_${task_name}_marker_zarr"
+TASK_SETTINGS="${UNIVTAC_ROOT}/policy/task_settings.json"
 
 if [ ! -d "$ZARR_DIR/replay_buffer.zarr" ]; then
     echo "Error: Marker zarr data not found at $ZARR_DIR/replay_buffer.zarr"
@@ -19,20 +21,35 @@ if [ ! -d "$ZARR_DIR/replay_buffer.zarr" ]; then
     exit 1
 fi
 
+# Read camera_type from task_settings.json to select single/dual camera task config
+camera_type=$(python3 -c "
+import json
+with open('${TASK_SETTINGS}') as f:
+    settings = json.load(f)
+print(settings.get('${task_name}', {}).get('camera_type', 'head'))
+")
+
+if [ "$camera_type" = "all" ]; then
+    TASK_CONFIG="univtac_at_marker_emb_dual_cam"
+else
+    TASK_CONFIG="univtac_at_marker_emb"
+fi
+
 cd "$RDP_ROOT"
 
 echo "Training AT-VAE (marker emb) for task: ${task_name}"
-echo "  Data:       ${ZARR_DIR}"
-echo "  GPU:        ${gpu_id}"
-echo "  Components: ${n_components}"
+echo "  Data:        ${ZARR_DIR}"
+echo "  GPU:         ${gpu_id}"
+echo "  Components:  ${n_components}"
+echo "  Camera type: ${camera_type}  ->  task config: ${TASK_CONFIG}"
 
 CUDA_VISIBLE_DEVICES=${gpu_id} python train.py \
     --config-name=train_at_workspace \
-    task=univtac_at_marker_emb \
+    task=${TASK_CONFIG} \
     at=at_univtac \
     task.dataset_path="${ZARR_DIR}" \
     training.device="cuda:0" \
     "exp_name=univtac_marker_${task_name}"
-# NOTE: n_tac_components is set via YAML anchor in univtac_at_marker_emb.yaml.
+# NOTE: n_tac_components is set via YAML anchor in univtac_at_marker_emb*.yaml.
 # YAML anchors cannot be overridden via CLI. Edit the yaml directly if you
 # change --n_components in process_data_marker.sh.
