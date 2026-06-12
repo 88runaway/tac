@@ -8,6 +8,8 @@
 #
 # Examples:
 #   CKPT_TIMESTAMP="2026-06-06_18:15:18" bash policy/Pi05/sh/eval.sh lift_bottle  
+#   CKPT_DIR=/data1/zjb/ckpt/lerobot/pi05_lerobot/lift_bottle/6k/pretrained_model bash policy/Pi05/sh/eval.sh
+#   CKPT_DIR=/data1/zjb/ckpt/lerobot/pi05_lerobot/lift_bottle/10k/pretrained_model bash policy/Pi05/sh/eval.sh
 #   bash policy/Pi05/sh/eval.sh lift_bottle                  # 覆盖 task_name
 #   bash policy/Pi05/sh/eval.sh lift_bottle train_lora 0     # 覆盖 task/config/gpu
 #   CKPT_DIR=/path/to/ckpt bash policy/Pi05/sh/eval.sh       # 直接指定 checkpoint

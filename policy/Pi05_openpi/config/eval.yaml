@@ -1,0 +1,49 @@
+# ─── UniVTAC Pi0.5 JAX (openpi) Evaluation Configuration ─────────────────────
+#
+# 所有评估参数集中在此文件，eval.sh 从中读取。
+#
+# Usage:
+#   bash policy/Pi05_openpi/sh/eval.sh                        # 使用本文件全部默认值
+#   bash policy/Pi05_openpi/sh/eval.sh lift_bottle            # 覆盖 task_name
+#
+# ─── 任务 ────────────────────────────────────────────────────────────────────
+task_name: lift_bottle          # 要评估的任务（task_settings.json 中的 key）
+task_config: demo               # Isaac Lab 任务配置文件名（task_config/<name>.yml）
+
+# ─── Checkpoint ───────────────────────────────────────────────────────────────
+# JAX checkpoint 路径（orbax 格式），必须直接指定
+ckpt_dir: "/data1/zjb/ckpt/lerobot/pi05_jax/all/128_2k"
+
+# openpi training config name (用于构建 data transforms / norm stats)
+config_name: pi05_univtac
+
+# ─── 硬件 ─────────────────────────────────────────────────────────────────────
+gpu_id: "0"                     # CUDA_VISIBLE_DEVICES，多卡示例："0,1"
+
+# ─── 评估规模 ─────────────────────────────────────────────────────────────────
+total_num: 100                  # 评估总 episode 数
+start_seed: -1                  # 起始 seed（-1 = 使用框架默认值）
+max_seed: -1                    # 终止 seed（-1 = 不限）
+
+# ─── 推理参数 ─────────────────────────────────────────────────────────────────
+# n_action_steps: 每次推理后连续执行的动作步数（action chunking）
+#   openpi pi05 模型输出 action_horizon=50 步，此处取前 n_action_steps 步执行
+n_action_steps: 50
+
+# num_inference_steps: flow-matching denoising 步数（即 openpi sample_actions 的 num_steps）
+#   默认 10；减小可加速推理，增大可提升动作质量（通常 5~20 之间）
+num_inference_steps: 50
+
+# decimation: 每次 take_action 执行的 physics substep 数
+#   仿真 dt=1/120s，decimation=N → 每次动作执行 N/120 秒
+decimation: 1
+
+# ─── 指令 ─────────────────────────────────────────────────────────────────────
+instruction_type: seen          # seen | unseen
+
+# ─── 输出 ─────────────────────────────────────────────────────────────────────
+save_video: true                # 保存每个 episode 的评估视频
+save_image: false               # 在推理时每 10 步保存一张 debug 截图
+
+# ─── 专家检验 ─────────────────────────────────────────────────────────────────
+expert_check: false             # 每个 seed 先用专家策略验证可达性

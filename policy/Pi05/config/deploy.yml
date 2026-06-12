@@ -16,3 +16,13 @@ instruction_type: seen
 
 # instuction_file: null 表示使用 instructions/<task_name>.json
 instuction_file: null
+
+# tokenizer_name: tokenizer 本地路径（避免联网下载）
+# null = 使用 checkpoint 中保存的值（可能触发 HuggingFace 下载）
+tokenizer_name: "/data1/zjb/ckpt/paligemma/paligemma-3b-pt-224"
+
+# rename_map_override: 覆盖 preprocessor 中 rename_observations_processor 的 rename_map。
+# 评估时，环境提供 observation.images.base_0_rgb，需映射回模型 config 期望的键名。
+# null = 不覆盖，使用 checkpoint 保存的 rename_map。
+rename_map_override:
+  "observation.images.base_0_rgb": "observation.images.head"

@@ -1,0 +1,25 @@
+# Pi0.5 JAX (openpi) 部署配置（由 eval_policy.py 加载）
+#
+# 评估的运行时参数（task、checkpoint、GPU、episode 数、seed 等）
+# 统一在 config/eval.yaml 中配置，由 sh/eval.sh 读取并通过
+# 环境变量 CKPT_DIR 传递给 deploy_policy.py。
+
+policy_name: Pi05_openpi
+
+# ckpt_dir: 运行时由 deploy_policy.py 从 CKPT_DIR 环境变量解析
+ckpt_dir: null
+
+# openpi config name (in openpi/src/openpi/training/config.py _CONFIGS)
+config_name: pi05_univtac
+
+# instruction_type 在 eval.yaml 中统一配置；此处仅作备份默认值
+instruction_type: seen
+
+# instuction_file: null 表示使用 instructions/<task_name>.json
+instuction_file: null
+
+# ─── 推理参数 ────────────────────────────────────────────────────────────────
+# num_inference_steps: flow-matching denoising 步数（即 sample_actions 的 num_steps）
+#   openpi pi0.5 默认值为 10；减小可加速推理，增大可提升动作质量
+#   null 表示使用模型默认值（10）
+num_inference_steps: 50

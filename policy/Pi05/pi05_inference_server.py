@@ -198,6 +198,12 @@ class InferenceServer:
         preprocessor_overrides = {
             "device_processor": {"device": str(self.device)},
         }
+        tokenizer_name = args.get("tokenizer_name")
+        if tokenizer_name:
+            preprocessor_overrides["tokenizer_processor"] = {"tokenizer_name": tokenizer_name}
+        rename_map_override = args.get("rename_map_override")
+        if rename_map_override is not None:
+            preprocessor_overrides["rename_observations_processor"] = {"rename_map": rename_map_override}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=self.policy.config,
             pretrained_path=ckpt_dir,

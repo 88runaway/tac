@@ -191,6 +191,12 @@ class Policy(BasePolicy):
             init_args["rtc_execution_horizon"] = rtc_execution_horizon
         if num_inference_steps is not None:
             init_args["num_inference_steps"] = num_inference_steps
+        tokenizer_name = args.get("tokenizer_name")
+        if tokenizer_name and str(tokenizer_name).strip() not in ("", "null", "None"):
+            init_args["tokenizer_name"] = str(tokenizer_name).strip()
+        rename_map_override = args.get("rename_map_override")
+        if rename_map_override is not None and str(rename_map_override).strip() not in ("null", "None"):
+            init_args["rename_map_override"] = rename_map_override
 
         _send_msg(self._sock, _encode({"cmd": "init", "args": init_args}))
         reply = _decode(_recv_msg(self._sock))
@@ -215,6 +221,8 @@ class Policy(BasePolicy):
 
         if args.get("ckpt_dir"):
             ckpt_dir = Path(args["ckpt_dir"])
+        elif os.environ.get("CKPT_DIR"):
+            ckpt_dir = Path(os.environ["CKPT_DIR"])
         else:
             ckpt_root = os.environ.get("CKPT_ROOT", None)
             ckpt_config = os.environ.get("CKPT_CONFIG", "train_lora")
