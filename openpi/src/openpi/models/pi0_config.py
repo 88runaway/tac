@@ -170,6 +170,26 @@ class Pi0DFConfig(_model.BaseModelConfig):
     use_tactile: bool = False
     tactile_tokens_per_finger: int = 16
 
+    # ── Tactile expert (future tactile prediction via flow matching) ────────────
+    # When enabled, adds an INDEPENDENT Transformer (third expert) that denoises
+    # future tactile latent tokens alongside the action tokens. Both experts have
+    # separate parameters but mutually attend each other via the shared attention
+    # mask. The tactile expert predicts the next-block tactile observation. Its
+    # noise schedule is synchronized with the action block becoming clean.
+    use_tactile_expert: bool = False
+    # Gemma variant for the tactile expert Transformer (independent params).
+    # Must share head_dim/num_heads/num_kv_heads/depth with other experts.
+    tactile_expert_variant: _gemma.Variant = "gemma_300m"
+    # Number of tokens for the tactile expert stream (predicted future tactile).
+    tactile_expert_num_tokens: int = 32
+    # Loss weight for the tactile expert velocity matching loss.
+    tactile_expert_loss_weight: float = 0.5
+    # When True, the tactile expert tokens can only attend to action block 0
+    # (the block that becomes clean first), not all action tokens.
+    # This enforces a local attention pattern: tactile predicts future tactile
+    # conditioned only on the immediately upcoming action block.
+    tac_expert_local_attn: bool = False
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)

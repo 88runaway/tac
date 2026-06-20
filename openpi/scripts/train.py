@@ -1,3 +1,4 @@
+import csv
 import dataclasses
 import functools
 import logging
@@ -147,15 +148,21 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return jnp.mean(chunked_loss)
+        result = model.compute_loss(rng, observation, actions, train=True)
+        if isinstance(result, tuple):
+            chunked_loss, aux = result
+        else:
+            chunked_loss, aux = result, {}
+        return jnp.mean(chunked_loss), aux
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    (loss, aux), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
+        model, train_rng, observation, actions
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -175,18 +182,33 @@ def train_step(
         )
 
     # Filter out params that aren't kernels.
-    kernel_params = nnx.state(
-        model,
-        nnx.All(
-            nnx.Param,
-            nnx.Not(nnx_utils.PathRegex(".*/(bias|scale|pos_embedding|input_embedding)")),
-            lambda _, x: x.value.ndim > 1,
-        ),
+    _is_kernel = nnx.All(
+        nnx.Param,
+        nnx.Not(nnx_utils.PathRegex(".*/(bias|scale|pos_embedding|input_embedding)")),
+        lambda _, x: x.value.ndim > 1,
     )
+    kernel_params = nnx.state(model, _is_kernel)
+
+    # Separate action expert vs tac expert kernel params.
+    # tac expert params: paths containing "tac_expert" or ending with "_2" suffix (3rd Gemma expert).
+    _is_tac_kernel = nnx.All(
+        _is_kernel,
+        nnx_utils.PathRegex(".*(tac_expert|_2/|_2$).*"),
+    )
+    _is_action_kernel = nnx.All(
+        _is_kernel,
+        nnx.Not(nnx_utils.PathRegex(".*(tac_expert|_2/|_2$).*")),
+    )
+    action_kernel_params = nnx.state(model, _is_action_kernel)
+    tac_kernel_params = nnx.state(model, _is_tac_kernel)
+
     info = {
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        "act_param_norm": optax.global_norm(action_kernel_params),
+        "tac_param_norm": optax.global_norm(tac_kernel_params),
+        **{k: v for k, v in aux.items()},
     }
     return new_state, info
 
@@ -227,11 +249,14 @@ def main(config: _config.TrainConfig):
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
     # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
+    try:
+        images_to_log = [
+            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+            for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        ]
+        wandb.log({"camera_views": images_to_log}, step=0)
+    except Exception as _e:
+        logging.warning(f"wandb image logging failed (non-fatal): {_e}")
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -255,6 +280,15 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
     )
 
+    # ── txt loss logger ────────────────────────────────────────────────────────
+    import pathlib as _pathlib
+    _loss_log_path = _pathlib.Path(str(config.checkpoint_dir)) / "loss_log.csv"
+    _write_header = not _loss_log_path.exists() or _loss_log_path.stat().st_size == 0
+    _loss_log_file = _loss_log_path.open("a", newline="", buffering=1)
+    _loss_csv = csv.writer(_loss_log_file)
+    if _write_header:
+        _loss_csv.writerow(["step", "loss", "action_loss", "tac_loss", "grad_norm", "act_param_norm", "tac_param_norm"])
+
     infos = []
     for step in pbar:
         with sharding.set_mesh(mesh):
@@ -265,12 +299,27 @@ def main(config: _config.TrainConfig):
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
+            try:
+                wandb.log(reduced_info, step=step)
+            except Exception as _e:
+                logging.warning(f"wandb.log failed (non-fatal): {_e}")
+            # Always write to txt regardless of wandb status
+            _loss_csv.writerow([
+                step,
+                reduced_info.get("loss", ""),
+                reduced_info.get("action_loss", ""),
+                reduced_info.get("tac_loss", ""),
+                reduced_info.get("grad_norm", ""),
+                reduced_info.get("act_param_norm", ""),
+                reduced_info.get("tac_param_norm", ""),
+            ])
             infos = []
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+
+    _loss_log_file.close()
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

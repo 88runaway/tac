@@ -31,3 +31,8 @@ infer_time_schedule: blockwise
 #   null = 使用训练时的 num_blocks（推荐）
 #   例：action_horizon=50, block_size=5 → 10 block，第5/10/.../50步依次 clean
 block_size: 5
+
+# ─── Tactile expert ──────────────────────────────────────────────────────────
+# 推理时 tactile expert 与 action 同步去噪。预测的 future tactile latent
+# 不直接使用，仅通过 mutual attention 为 action 提供前瞻触觉信息。
+# 此项无需手动设置，推理时自动从 ckpt 的 model config 读取。

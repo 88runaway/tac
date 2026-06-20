@@ -25,6 +25,12 @@ The only architectural requirement beyond standard Pi0 is that the action-expert
 conditioning accepts a per-position tensor ``(b, ah, emb)``; the shared ``gemma.RMSNorm``
 already handles both ``(b, emb)`` and ``(b, ah, emb)`` conditioning.
 
+Tactile Expert (optional):
+    When ``use_tactile_expert=True``, a THIRD gemma expert (independent Transformer
+    weights) is instantiated to denoise future tactile latent tokens. The three experts
+    share attention (mutual attention between action and tactile expert) but have
+    completely separate QKV/FFN/Norm parameters.
+
 RTC (real-time chunking) is intentionally **not** implemented here.
 """
 
@@ -82,14 +88,27 @@ class Pi0DF(_model.BaseModel):
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
+
+        # ── Build the multi-expert LLM ────────────────────────────────────────────
+        self.use_tactile_expert = config.use_tactile_expert
+        if self.use_tactile_expert:
+            tactile_expert_config = _gemma.get_config(config.tactile_expert_variant)
+            self._tactile_expert_width = tactile_expert_config.width
+            llm_configs = [paligemma_config, action_expert_config, tactile_expert_config]
+            use_adarms = [False, True, True] if config.pi05 else [False, False, False]
+        else:
+            self._tactile_expert_width = None
+            llm_configs = [paligemma_config, action_expert_config]
+            use_adarms = [False, True] if config.pi05 else [False, False]
+
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
-                configs=[paligemma_config, action_expert_config],
+                configs=llm_configs,
                 embed_dtype=config.dtype,
                 adarms=config.pi05,
             )
         )
-        llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True] if config.pi05 else [False, False])
+        llm.lazy_init(rngs=rngs, method="init", use_adarms=use_adarms)
         img = nnx_bridge.ToNNX(
             _siglip.Module(
                 num_classes=paligemma_config.width,
@@ -111,7 +130,6 @@ class Pi0DF(_model.BaseModel):
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
 
-        # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
         # ── Diffusion forcing config ─────────────────────────────────────────────
@@ -138,10 +156,27 @@ class Pi0DF(_model.BaseModel):
             )
             self.num_tactile_tokens = self.tactile_tokens_per_finger * 2  # left + right
 
+        # ── Tactile expert projections (independent Transformer via 3rd expert) ───
+        if self.use_tactile_expert:
+            assert self.use_tactile, "use_tactile_expert requires use_tactile=True"
+            self.tactile_expert_num_tokens = config.tactile_expert_num_tokens
+            self.tactile_expert_loss_weight = config.tactile_expert_loss_weight
+            self.tac_expert_local_attn = config.tac_expert_local_attn
+            tac_width = self._tactile_expert_width
+            act_width = action_expert_config.width
+            # Input: project noisy tactile latent (act_width) → tactile expert width
+            self.tac_expert_in_proj = nnx.Linear(act_width, tac_width, rngs=rngs)
+            # Time MLP for tactile expert adaRMS conditioning
+            self.tac_expert_time_mlp_in = nnx.Linear(tac_width, tac_width, rngs=rngs)
+            self.tac_expert_time_mlp_out = nnx.Linear(tac_width, tac_width, rngs=rngs)
+            # Output: project tactile expert output (tac_width) → act_width for loss
+            self.tac_expert_out_proj = nnx.Linear(tac_width, act_width, rngs=rngs)
+
         logger.info(
             f"Pi0DF: num_blocks={self.num_blocks}, block_size={self.block_size}, "
             f"mix_prob={self.mix_prob}, block_time_sampling={self.block_time_sampling}, "
-            f"use_tactile={self.use_tactile}"
+            f"use_tactile={self.use_tactile}, use_tactile_expert={self.use_tactile_expert}"
+            + (f", tactile_expert_variant={config.tactile_expert_variant}" if self.use_tactile_expert else "")
         )
 
     @at.typecheck
@@ -151,7 +186,6 @@ class Pi0DF(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
-        # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
 
@@ -163,15 +197,12 @@ class Pi0DF(_model.BaseModel):
                     s=image_tokens.shape[1],
                 )
             )
-            # image tokens attend to each other
             ar_mask += [False] * image_tokens.shape[1]
 
-        # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
@@ -203,17 +234,13 @@ class Pi0DF(_model.BaseModel):
         at.Bool[at.Array, " s"],
         at.Float[at.Array, "b st emb"] | None,
     ]:
-        """Embed the suffix with a *per-position* timestep ``(b, ah)``.
+        """Embed the action-expert suffix (expert 1).
 
-        When ``tactile_tokens`` is provided (shape ``(b, num_tactile_tokens, emb)``),
-        they are prepended before the action tokens in the suffix and form their own
-        causal block. The resulting block structure is ``prefix < tactile < action``:
-        tactile attends only the prefix and itself (never the noisy action tokens, so
-        its representation is stable and cacheable), while action attends the prefix,
-        the tactile tokens and itself. The prefix cannot attend back to the suffix.
+        Token layout: [current_tactile (condition)] [action_tokens]
 
-        The adaRMS conditioning is zero-padded for tactile positions (no time-dependent
-        modulation) and set to the per-action time embedding for action positions.
+        When tactile expert is enabled, action tokens share a causal block with the
+        tactile expert (expert 2) via ar_mask. When disabled, action tokens form their
+        own causal block (original Pi0DF behaviour).
         """
         input_mask = []
         ar_mask = []
@@ -224,7 +251,7 @@ class Pi0DF(_model.BaseModel):
             input_mask.append(jnp.ones((obs.state.shape[0], 1), dtype=jnp.bool_))
             ar_mask += [True]
 
-        # ── Tactile tokens (prepended before action tokens) ───────────────────
+        # ── Current tactile tokens (condition) ────────────────────────────────
         if tactile_tokens is not None:
             nt = tactile_tokens.shape[1]
             tokens.append(tactile_tokens)
@@ -245,15 +272,15 @@ class Pi0DF(_model.BaseModel):
             time_emb = nnx.swish(time_emb)
             action_expert_tokens = action_tokens
 
-            # Build adaRMS conditioning: zeros for tactile, time_emb for actions
+            # adaRMS conditioning: zeros for tactile condition + action time emb
+            cond_parts = []
             if tactile_tokens is not None:
-                tac_cond = jnp.zeros(
+                cond_parts.append(jnp.zeros(
                     (tactile_tokens.shape[0], tactile_tokens.shape[1], time_emb.shape[-1]),
                     dtype=time_emb.dtype,
-                )
-                adarms_cond = jnp.concatenate([tac_cond, time_emb], axis=1)
-            else:
-                adarms_cond = time_emb
+                ))
+            cond_parts.append(time_emb)
+            adarms_cond = jnp.concatenate(cond_parts, axis=1)
         else:
             time_tokens = time_emb
             action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
@@ -265,35 +292,65 @@ class Pi0DF(_model.BaseModel):
 
         tokens.append(action_expert_tokens)
         input_mask.append(jnp.ones(action_expert_tokens.shape[:2], dtype=jnp.bool_))
-        # Action tokens always start a new causal block. With tactile present this
-        # places them *after* the tactile block (cumsum: prefix=0, tactile=1, action=2),
-        # so action can attend prefix+tactile+action while tactile attends only
-        # prefix+tactile (never the noisy action tokens).
-        ar_mask += [True] + ([False] * (self.action_horizon - 1))
+        # When tactile expert is enabled, action shares causal block with expert 2
+        # (ar_mask=False → same cumsum → bidirectional attention with expert 2 tokens).
+        # When disabled, action starts its own block (original behaviour).
+        if self.use_tactile_expert:
+            ar_mask += [True] + ([False] * (self.action_horizon - 1))
+        else:
+            ar_mask += [True] + ([False] * (self.action_horizon - 1))
 
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def embed_tactile_expert(
+        self,
+        noisy_future_tactile: at.Float[at.Array, "b nft emb"],
+        tactile_expert_timestep: at.Float[at.Array, "b nft"],
+    ) -> tuple[
+        at.Float[at.Array, "b nft tac_w"],
+        at.Bool[at.Array, "b nft"],
+        at.Bool[at.Array, " nft"],
+        at.Float[at.Array, "b nft tac_w"],
+    ]:
+        """Embed tokens for the tactile expert (expert 2).
+
+        Returns (tokens, input_mask, ar_mask, adarms_cond) for the third expert.
+        ar_mask is all-False so tokens share the same causal block as action tokens
+        (enabling bidirectional mutual attention).
+        """
+        nft = noisy_future_tactile.shape[1]
+        b = noisy_future_tactile.shape[0]
+        tac_width = self._tactile_expert_width
+
+        # Project noisy tactile latent → tactile expert embedding space
+        tac_tokens = self.tac_expert_in_proj(noisy_future_tactile)  # (b, nft, tac_width)
+
+        input_mask = jnp.ones((b, nft), dtype=jnp.bool_)
+        # All False: same cumsum as action tokens → bidirectional attention
+        ar_mask = jnp.array([False] * nft)
+
+        # adaRMS conditioning from timestep
+        tac_time_emb = jax.vmap(
+            functools.partial(
+                posemb_sincos, embedding_dim=tac_width, min_period=4e-3, max_period=4.0
+            )
+        )(tactile_expert_timestep)
+        tac_time_emb = self.tac_expert_time_mlp_in(tac_time_emb)
+        tac_time_emb = nnx.swish(tac_time_emb)
+        tac_time_emb = self.tac_expert_time_mlp_out(tac_time_emb)
+        tac_time_emb = nnx.swish(tac_time_emb)
+
+        return tac_tokens, input_mask, ar_mask, tac_time_emb
+
     def _expand_blocks(self, block_values: jax.Array) -> jax.Array:
         """Expand per-block values ``(b, num_blocks)`` to per-position ``(b, ah)``."""
         return jnp.repeat(block_values, self.block_size, axis=1)
 
     def _pyramid_block_time(self, rng: at.KeyArrayLike, batch: int) -> jax.Array:
-        """Sample a fixed monotone (earlier blocks cleaner) per-position time ``(b, ah)``.
-
-        A single global progress scalar ``p ~ U(0, 1)`` is drawn per batch element and mapped
-        to a monotonically-increasing per-block noise level via the same formula used by the
-        inference ``blockwise`` pyramid schedule (see ``_blockwise_time_schedule``):
-
-            ``t_k = clip(1 - p * num_blocks / (k + 1), 0, 1)``
-
-        At ``p = 0`` all blocks are pure noise (``t = 1``); as ``p → 1`` earlier blocks reach the
-        clean state first, with block ``k`` becoming clean at ``p = (k + 1) / num_blocks``. Drawing
-        ``p`` uniformly matches the (linear) progress the inference sampler sweeps through, so the
-        training and inference per-block time distributions coincide.
-        """
+        """Sample a fixed monotone (earlier blocks cleaner) per-position time ``(b, ah)``."""
         phase = jax.random.uniform(rng, (batch, 1))  # (b, 1) in [0, 1)
         k = jnp.arange(self.num_blocks)[None, :]  # (1, num_blocks)
         t_blocks = jnp.clip(1.0 - phase * self.num_blocks / (k + 1), 0.0, 1.0)  # (b, num_blocks)
@@ -306,17 +363,16 @@ class Pi0DF(_model.BaseModel):
         use_block: at.Bool[at.Array, "b 1"],
         *,
         train: bool = False,
-    ) -> at.Float[at.Array, "b nt emb"] | None:
-        """Select & encode the tactile frame matching the monotone progress ``p``.
+    ) -> tuple[at.Float[at.Array, "b nt emb"] | None, at.Float[at.Array, "b nt emb"] | None]:
+        """Select & encode current tactile + future tactile target.
 
-        For the monotone DF branch, ``c = floor(p * num_blocks)`` gives the number
-        of clean blocks; ``tactile[:, c]`` is the observation after executing ``c``
-        blocks.  For the const branch (``use_block == False``) ``c = 0`` (initial
-        observation).  For the ``independent`` sampling mode ``c = 0`` as well (no
-        well-defined monotone ordering).
+        Returns:
+            current_tactile_tokens: Encoded current tactile (condition).
+            future_tactile_target: Encoded next-block tactile (prediction target).
+                None if tactile expert is disabled.
         """
         if not self.use_tactile or observation.tactile is None:
-            return None
+            return None, None
 
         tac_left = observation.tactile["left"]    # (b, num_blocks, H, W, 3)
         tac_right = observation.tactile["right"]  # (b, num_blocks, H, W, 3)
@@ -332,24 +388,181 @@ class Pi0DF(_model.BaseModel):
         idx = jnp.arange(b)
         sel_left = tac_left[idx, c]    # (b, H, W, 3)
         sel_right = tac_right[idx, c]  # (b, H, W, 3)
-        return self.encode_tactile(sel_left, sel_right, train=train)
+        current_tactile_tokens = self.encode_tactile(sel_left, sel_right, train=train)
+
+        future_tactile_target = None
+        if self.use_tactile_expert:
+            c_next = jnp.clip(c + 1, 0, self.num_blocks - 1)
+            fut_left = tac_left[idx, c_next]    # (b, H, W, 3)
+            fut_right = tac_right[idx, c_next]  # (b, H, W, 3)
+            future_tactile_target = self.encode_tactile(fut_left, fut_right, train=train)
+
+        return current_tactile_tokens, future_tactile_target
+
+    def _apply_tac_local_attn_mask(
+        self,
+        attn_mask: at.Bool[at.Array, "b q k"],
+        prefix_len: int,
+        suffix_len: int,
+        nft: int,
+        *,
+        is_cached: bool,
+    ) -> at.Bool[at.Array, "b q k"]:
+        """Block tactile expert from attending to action block 1..N.
+
+        Sequence layout:
+          Full forward:   [prefix(p) | suffix(s) | tac_expert(nft)]
+          Cached forward: [suffix(s) | tac_expert(nft)] (prefix in kv_cache)
+                           key cols:  [prefix(p) | suffix(s) | tac_expert(nft)]
+
+        action tokens are the last ``self.action_horizon`` tokens of suffix.
+        block 0 covers the first ``self.block_size`` action tokens.
+        """
+        ah = self.action_horizon
+        bs = self.block_size
+        q_len = attn_mask.shape[1]
+        k_len = attn_mask.shape[2]
+
+        if is_cached:
+            # query positions in the current (non-cached) part
+            tac_q_start = suffix_len
+            tac_q_end = suffix_len + nft
+            # key positions include cached prefix first
+            act_block1_k = prefix_len + (suffix_len - ah + bs)
+            act_end_k = prefix_len + suffix_len
+        else:
+            tac_q_start = prefix_len + suffix_len
+            tac_q_end = tac_q_start + nft
+            act_block1_k = prefix_len + (suffix_len - ah + bs)
+            act_end_k = prefix_len + suffix_len
+
+        q_idx = jnp.arange(q_len)
+        k_idx = jnp.arange(k_len)
+        # True where this is a tac_expert query position
+        is_tac_q = (q_idx >= tac_q_start) & (q_idx < tac_q_end)    # (q,)
+        # True where this is an action block_1..N key position
+        is_block1_k = (k_idx >= act_block1_k) & (k_idx < act_end_k)  # (k,)
+        # Block positions that are both tac query AND block_1+ key
+        block = is_tac_q[:, None] & is_block1_k[None, :]              # (q, k)
+        return attn_mask & ~block[None, :, :]  # broadcast over batch
+
+    def _forward_3expert(
+        self,
+        prefix_tokens, prefix_mask, prefix_ar_mask,
+        suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms,
+        tac_expert_tokens=None, tac_expert_mask=None, tac_expert_ar_mask=None, tac_adarms=None,
+        *,
+        kv_cache=None,
+        use_kv_cache: bool = False,
+    ):
+        """Run the multi-expert LLM forward pass.
+
+        Handles both full forward (training) and cached-prefix forward (inference).
+
+        Returns:
+            suffix_out: output of expert 1 (action expert suffix).
+            tac_expert_out: output of expert 2 (tactile expert), or None.
+            kv_cache: updated kv_cache (or None).
+        """
+        if not use_kv_cache:
+            # Full forward: prefix + suffix + (optional) tactile expert
+            if tac_expert_tokens is not None:
+                input_mask = jnp.concatenate([prefix_mask, suffix_mask, tac_expert_mask], axis=1)
+                ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask, tac_expert_ar_mask], axis=0)
+            else:
+                input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+                ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+            attn_mask = make_attn_mask(input_mask, ar_mask)
+            # Apply local attention: restrict tac_expert to only attend block 0
+            if tac_expert_tokens is not None and self.use_tactile_expert and self.tac_expert_local_attn:
+                attn_mask = self._apply_tac_local_attn_mask(
+                    attn_mask,
+                    prefix_len=prefix_tokens.shape[1],
+                    suffix_len=suffix_tokens.shape[1],
+                    nft=tac_expert_tokens.shape[1],
+                    is_cached=False,
+                )
+            positions = jnp.cumsum(input_mask, axis=1) - 1
+
+            if tac_expert_tokens is not None:
+                outputs, new_kv = self.PaliGemma.llm(
+                    [prefix_tokens, suffix_tokens, tac_expert_tokens],
+                    mask=attn_mask, positions=positions,
+                    adarms_cond=[None, action_adarms, tac_adarms],
+                )
+                _, suffix_out, tac_expert_out = outputs
+            else:
+                outputs, new_kv = self.PaliGemma.llm(
+                    [prefix_tokens, suffix_tokens],
+                    mask=attn_mask, positions=positions,
+                    adarms_cond=[None, action_adarms],
+                )
+                _, suffix_out = outputs
+                tac_expert_out = None
+            return suffix_out, tac_expert_out, new_kv
+        else:
+            # Cached forward: suffix + (optional) tactile expert attend to prefix via kv_cache
+            if tac_expert_tokens is not None:
+                current_mask = jnp.concatenate([suffix_mask, tac_expert_mask], axis=1)
+                current_ar = jnp.concatenate([suffix_ar_mask, tac_expert_ar_mask], axis=0)
+            else:
+                current_mask = suffix_mask
+                current_ar = suffix_ar_mask
+            current_attn = make_attn_mask(current_mask, current_ar)
+            prefix_attend = einops.repeat(prefix_mask, "b p -> b s p", s=current_mask.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attend, current_attn], axis=-1)
+            # Apply local attention in cached forward
+            if tac_expert_tokens is not None and self.use_tactile_expert and self.tac_expert_local_attn:
+                # prefix_len: full_attn_mask key dim = prefix_len + suffix_len + nft
+                _nft = tac_expert_tokens.shape[1]
+                _slen = suffix_tokens.shape[1]
+                _plen = full_attn_mask.shape[2] - _slen - _nft
+                full_attn_mask = self._apply_tac_local_attn_mask(
+                    full_attn_mask,
+                    prefix_len=_plen,
+                    suffix_len=_slen,
+                    nft=_nft,
+                    is_cached=True,
+                )
+            positions_local = (
+                jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(current_mask, axis=-1) - 1
+            )
+
+            if tac_expert_tokens is not None:
+                outputs, new_kv = self.PaliGemma.llm(
+                    [None, suffix_tokens, tac_expert_tokens],
+                    mask=full_attn_mask, positions=positions_local,
+                    kv_cache=kv_cache,
+                    adarms_cond=[None, action_adarms, tac_adarms],
+                )
+                _, suffix_out, tac_expert_out = outputs
+            else:
+                outputs, new_kv = self.PaliGemma.llm(
+                    [None, suffix_tokens],
+                    mask=full_attn_mask, positions=positions_local,
+                    kv_cache=kv_cache,
+                    adarms_cond=[None, action_adarms],
+                )
+                _, suffix_out = outputs
+                tac_expert_out = None
+            return suffix_out, tac_expert_out, new_kv
 
     @override
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
-        preprocess_rng, noise_rng, time_rng, block_rng, type_rng, phase_rng = jax.random.split(rng, 6)
+        preprocess_rng, noise_rng, time_rng, block_rng, type_rng, phase_rng, tac_noise_rng = jax.random.split(rng, 7)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
         b, ah, ad = actions.shape
         noise = jax.random.normal(noise_rng, actions.shape)
 
-        # standard flow-matching time: one scalar per batch, broadcast across the chunk
+        # standard flow-matching time
         time_scalar = jax.random.beta(time_rng, 1.5, 1, (b, 1)) * 0.999 + 0.001  # (b, 1)
         time_const = jnp.broadcast_to(time_scalar, (b, ah))  # (b, ah)
 
         # block-wise diffusion forcing time
-        phase = jax.random.uniform(phase_rng, (b, 1))  # save phase for tactile selection
+        phase = jax.random.uniform(phase_rng, (b, 1))
         if self.block_time_sampling == "monotone":
             k = jnp.arange(self.num_blocks)[None, :]
             t_blocks = jnp.clip(1.0 - phase * self.num_blocks / (k + 1), 0.0, 1.0)
@@ -365,46 +578,86 @@ class Pi0DF(_model.BaseModel):
         u_t = noise - actions
 
         # ── Tactile selection & encoding ──────────────────────────────────────
-        tactile_tokens = self._select_tactile_for_training(
+        tactile_tokens, future_tactile_target = self._select_tactile_for_training(
             observation, phase, use_block, train=train
         )
 
-        # one big forward pass of prefix + suffix at once
+        # ── Tactile expert: noisy future tactile for flow matching ────────────
+        tac_expert_tokens = None
+        tac_expert_mask = None
+        tac_expert_ar_mask = None
+        tac_adarms = None
+        tac_u_t = None
+        tac_expert_timestep = None
+        if self.use_tactile_expert and future_tactile_target is not None:
+            nft = future_tactile_target.shape[1]  # num_tactile_tokens (32)
+            emb_dim = future_tactile_target.shape[2]
+            tac_noise_rng, tac_time_rng = jax.random.split(tac_noise_rng)
+            tac_noise = jax.random.normal(tac_noise_rng, (b, nft, emb_dim))
+
+            # Tactile expert timestep synchronized with current block
+            if self.block_time_sampling == "monotone":
+                c = jnp.floor(phase[:, 0] * self.num_blocks).astype(jnp.int32)
+                c = jnp.clip(c, 0, self.num_blocks - 1)
+                tac_t_scalar = t_blocks[jnp.arange(b), c][:, None]  # (b, 1)
+            else:
+                tac_t_scalar = jax.random.beta(
+                    tac_time_rng, 1.5, 1, (b, 1)
+                ) * 0.999 + 0.001
+            tac_t_scalar = jnp.where(use_block, tac_t_scalar, time_scalar)
+
+            tac_expert_timestep = jnp.broadcast_to(tac_t_scalar, (b, nft))  # (b, nft)
+            noisy_future_tactile = (
+                tac_t_scalar[..., None] * tac_noise +
+                (1 - tac_t_scalar[..., None]) * future_tactile_target
+            )
+            tac_u_t = tac_noise - future_tactile_target  # target velocity
+
+            # Embed for expert 2
+            tac_expert_tokens, tac_expert_mask, tac_expert_ar_mask, tac_adarms = (
+                self.embed_tactile_expert(noisy_future_tactile, tac_expert_timestep)
+            )
+
+        # ── Forward pass ──────────────────────────────────────────────────────
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+        suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms = self.embed_suffix(
             observation, x_t, time, tactile_tokens=tactile_tokens,
         )
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-        attn_mask = make_attn_mask(input_mask, ar_mask)
-        positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+
+        suffix_out, tac_expert_out, _ = self._forward_3expert(
+            prefix_tokens, prefix_mask, prefix_ar_mask,
+            suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms,
+            tac_expert_tokens, tac_expert_mask, tac_expert_ar_mask, tac_adarms,
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
+        # ── Action velocity loss ──────────────────────────────────────────────
+        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon:])
         per_token_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)  # (b, ah)
-
         active_mask = (time > 5e-4).astype(per_token_loss.dtype)  # (b, ah)
-        return per_token_loss * active_mask
+        action_loss = per_token_loss * active_mask
+        action_loss_scalar = jnp.mean(action_loss)  # pure action loss for logging
+
+        # ── Tactile expert velocity loss ──────────────────────────────────────
+        tac_loss_scalar = jnp.zeros(())  # scalar 0 when expert disabled
+        if self.use_tactile_expert and tac_expert_out is not None and tac_u_t is not None:
+            tac_v_t = self.tac_expert_out_proj(tac_expert_out)  # (b, nft, act_width)
+            tac_per_token_loss = jnp.mean(jnp.square(tac_v_t - tac_u_t), axis=-1)  # (b, nft)
+            tac_active = (tac_expert_timestep > 5e-4).astype(tac_per_token_loss.dtype)
+            tac_loss = jnp.mean(tac_per_token_loss * tac_active, axis=-1, keepdims=True)  # (b, 1)
+            tac_loss_scalar = jnp.mean(tac_loss)
+            action_loss = action_loss + self.tactile_expert_loss_weight * tac_loss
+
+        # combined_loss is used for gradient; aux carries individual scalar components for logging.
+        # action_loss_scalar: pure action FM loss (before adding tac)
+        # tac_loss_scalar: raw tactile FM loss (before weighting by tactile_expert_loss_weight)
+        aux = {
+            "action_loss": action_loss_scalar,
+            "tac_loss": tac_loss_scalar,
+        }
+        return action_loss, aux
 
     def _blockwise_time_schedule(self, num_steps: int, num_blocks: int | None = None) -> jax.Array:
         """Build a block-wise diffusion-forcing pyramid schedule.
-
-        All blocks denoise *simultaneously* over a fixed ``num_steps`` outer steps, but at
-        different rates so that earlier blocks reach the clean state first, maintaining a
-        noise-level gradient across blocks at every step.
-
-        Concretely, block ``k`` (0-indexed) descends linearly from ``t = 1`` (pure noise) to
-        ``t = 0`` (clean) over its first ``(k + 1) / num_blocks`` fraction of the schedule, i.e.
-        it becomes clean at outer step ``(k + 1) / num_blocks * num_steps``. With ``num_blocks``
-        blocks this means block 0 is clean after ``num_steps / num_blocks`` steps, block 1 after
-        ``2 * num_steps / num_blocks`` steps, and the last block exactly at ``num_steps``.
-
-        Args:
-            num_steps: total outer denoising steps.
-            num_blocks: number of blocks. Overrides ``self.num_blocks`` when provided (e.g. set
-                via ``block_size`` in the eval config). Must divide ``self.action_horizon``.
 
         Returns an array of shape ``(num_steps + 1, ah)`` with values in ``[0, 1]``.
         """
@@ -412,7 +665,6 @@ class Pi0DF(_model.BaseModel):
         bs = self.action_horizon // nb
         m = jnp.arange(num_steps + 1)[:, None]  # (num_steps+1, 1)
         k = jnp.arange(nb)[None, :]              # (1, nb)
-        # outer step at which block k reaches clean (t == 0)
         clean_step = (k + 1) * num_steps / nb    # (1, nb)
         t_block = jnp.clip(1.0 - m / clean_step, 0.0, 1.0)  # (num_steps+1, nb)
         t_schedule = jnp.repeat(t_block, bs, axis=1)         # (num_steps+1, ah)
@@ -432,9 +684,9 @@ class Pi0DF(_model.BaseModel):
     ) -> _model.Actions:
         """Sample actions with optional pre-encoded tactile tokens.
 
-        For standard ``const`` / ``blockwise`` schedules, ``tactile_tokens``
-        (if provided) remain fixed throughout the denoising.  For interactive
-        block-level tactile feedback, use ``sample_actions_interactive`` instead.
+        When ``use_tactile_expert`` is enabled, a parallel tactile expert stream
+        (independent Transformer) runs alongside action denoising. The tactile expert
+        noise is re-initialized at each block boundary during blockwise inference.
         """
         observation = _model.preprocess_observation(None, observation, train=False)
         batch_size = observation.state.shape[0]
@@ -442,41 +694,82 @@ class Pi0DF(_model.BaseModel):
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        # Prefill KV cache with prefix only
+        if self.use_tactile_expert:
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            positions = jnp.cumsum(prefix_mask, axis=1) - 1
+            _, kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None, None], mask=prefix_attn_mask, positions=positions,
+            )
+        else:
+            prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+            positions = jnp.cumsum(prefix_mask, axis=1) - 1
+            _, kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None], mask=prefix_attn_mask, positions=positions,
+            )
 
-        def forward_velocity(x_t, time, tac_tok):
-            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, time, tactile_tokens=tac_tok,
+        # Initialize tactile expert noise if enabled
+        tac_expert_noise = None
+        if self.use_tactile_expert and tactile_tokens is not None:
+            rng, tac_rng = jax.random.split(rng)
+            nft = self.num_tactile_tokens
+            emb_dim = tactile_tokens.shape[-1]
+            tac_expert_noise = jax.random.normal(tac_rng, (batch_size, nft, emb_dim))
+
+        def forward_velocity(x_t, time_full, tac_tok, tac_x_t=None, tac_time=None):
+            """Single denoising step: compute action velocity and optionally tactile velocity."""
+            suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms = self.embed_suffix(
+                observation, x_t, time_full, tactile_tokens=tac_tok,
             )
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_attn_mask_local = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            full_attn_mask = jnp.concatenate([prefix_attn_mask_local, suffix_attn_mask], axis=-1)
-            positions_local = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-            (_, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens],
-                mask=full_attn_mask,
-                positions=positions_local,
-                kv_cache=kv_cache,
-                adarms_cond=[None, adarms_cond],
+            tac_expert_tokens_local = None
+            tac_expert_mask_local = None
+            tac_expert_ar_mask_local = None
+            tac_adarms_local = None
+            if tac_x_t is not None and self.use_tactile_expert:
+                tac_expert_tokens_local, tac_expert_mask_local, tac_expert_ar_mask_local, tac_adarms_local = (
+                    self.embed_tactile_expert(tac_x_t, tac_time)
+                )
+
+            suffix_out, tac_expert_out, _ = self._forward_3expert(
+                prefix_tokens, prefix_mask, prefix_ar_mask,
+                suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms,
+                tac_expert_tokens_local, tac_expert_mask_local, tac_expert_ar_mask_local, tac_adarms_local,
+                kv_cache=kv_cache, use_kv_cache=True,
             )
-            return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            action_v = self.action_out_proj(suffix_out[:, -self.action_horizon:])
+            tac_v = None
+            if tac_expert_out is not None:
+                tac_v = self.tac_expert_out_proj(tac_expert_out)
+            return action_v, tac_v
 
         if infer_time_schedule == "const":
             dt = -1.0 / num_steps
 
-            def step(carry):
-                x_t, time = carry
-                time_full = jnp.broadcast_to(time, (batch_size, self.action_horizon))
-                v_t = forward_velocity(x_t, time_full, tactile_tokens)
-                return x_t + dt * v_t, time + dt
+            if tac_expert_noise is not None:
+                def step(carry):
+                    x_t, tac_x_t, time = carry
+                    time_full = jnp.broadcast_to(time, (batch_size, self.action_horizon))
+                    tac_time_full = jnp.broadcast_to(time, (batch_size, self.num_tactile_tokens))
+                    action_v, tac_v = forward_velocity(x_t, time_full, tactile_tokens, tac_x_t, tac_time_full)
+                    return x_t + dt * action_v, tac_x_t + dt * tac_v, time + dt
 
-            def cond(carry):
-                _, time = carry
-                return time >= -dt / 2
+                def cond(carry):
+                    _, _, time = carry
+                    return time >= -dt / 2
 
-            x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+                x_0, _, _ = jax.lax.while_loop(cond, step, (noise, tac_expert_noise, 1.0))
+            else:
+                def step(carry):
+                    x_t, time = carry
+                    time_full = jnp.broadcast_to(time, (batch_size, self.action_horizon))
+                    action_v, _ = forward_velocity(x_t, time_full, tactile_tokens)
+                    return x_t + dt * action_v, time + dt
+
+                def cond(carry):
+                    _, time = carry
+                    return time >= -dt / 2
+
+                x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
             return x_0
 
         if infer_time_schedule == "blockwise":
@@ -485,13 +778,47 @@ class Pi0DF(_model.BaseModel):
             dt_schedule = t_schedule[1:] - t_schedule[:-1]
             t_starts = t_schedule[:-1]
 
-            def step_adaptive(x_t, step_params):
-                t_curr, dt_curr = step_params
-                v_t = forward_velocity(x_t, t_curr, tactile_tokens)
-                x_next = x_t + dt_curr[..., None] * v_t
-                return x_next, None
+            nb = num_blocks if num_blocks is not None else self.num_blocks
+            steps_per_block = num_steps // nb
 
-            x_0, _ = jax.lax.scan(step_adaptive, noise, (t_starts, dt_schedule))
+            if tac_expert_noise is not None:
+                def step_adaptive(carry, step_params):
+                    x_t, tac_x_t, step_idx = carry
+                    t_curr, dt_curr = step_params
+                    # Tactile expert time: the CURRENT noise level of tac_x_t.
+                    # tac_x_t starts at t=1 (pure noise) and steps towards t=0.
+                    # Euler: t_k = 1 - k/N where k = step_idx % steps_per_block.
+                    tac_t = jnp.clip(
+                        1.0 - (step_idx % steps_per_block) / steps_per_block, 0.0, 1.0
+                    )
+                    tac_time_full = jnp.broadcast_to(tac_t, (batch_size, self.num_tactile_tokens))
+                    action_v, tac_v = forward_velocity(x_t, t_curr, tactile_tokens, tac_x_t, tac_time_full)
+                    x_next = x_t + dt_curr[..., None] * action_v
+                    # Tactile expert Euler step
+                    tac_dt = -1.0 / steps_per_block
+                    tac_x_next = tac_x_t + tac_dt * tac_v
+                    # Re-initialize tactile noise at block boundaries
+                    at_boundary = ((step_idx + 1) % steps_per_block == 0)
+                    tac_x_next = jnp.where(
+                        at_boundary,
+                        jax.random.normal(
+                            jax.random.fold_in(rng, step_idx),
+                            tac_x_t.shape
+                        ),
+                        tac_x_next,
+                    )
+                    return (x_next, tac_x_next, step_idx + 1), None
+
+                (x_0, _, _), _ = jax.lax.scan(
+                    step_adaptive, (noise, tac_expert_noise, 0), (t_starts, dt_schedule)
+                )
+            else:
+                def step_adaptive(x_t, step_params):
+                    t_curr, dt_curr = step_params
+                    action_v, _ = forward_velocity(x_t, t_curr, tactile_tokens)
+                    return x_t + dt_curr[..., None] * action_v, None
+
+                x_0, _ = jax.lax.scan(step_adaptive, noise, (t_starts, dt_schedule))
             return x_0
 
         raise ValueError(f"Invalid infer_time_schedule: {infer_time_schedule!r} (expected 'const' or 'blockwise')")
@@ -513,9 +840,14 @@ class Pi0DF(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm(
-            [prefix_tokens, None], mask=prefix_attn_mask, positions=positions,
-        )
+        if self.use_tactile_expert:
+            _, kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None, None], mask=prefix_attn_mask, positions=positions,
+            )
+        else:
+            _, kv_cache = self.PaliGemma.llm(
+                [prefix_tokens, None], mask=prefix_attn_mask, positions=positions,
+            )
         return noise, observation, prefix_tokens, prefix_mask, kv_cache
 
     def denoise_segment(
@@ -528,6 +860,7 @@ class Pi0DF(_model.BaseModel):
         prefix_mask,
         kv_cache,
         tactile_tokens: at.Float[at.Array, "b nt emb"] | None,
+        tac_expert_noise: at.Float[at.Array, "b nft emb"] | None = None,
     ) -> at.Float[at.Array, "b ah ad"]:
         """Run a segment of denoising steps with fixed ``tactile_tokens``.
 
@@ -535,25 +868,53 @@ class Pi0DF(_model.BaseModel):
         run a fixed number of steps with the current tactile, then return
         the partially-denoised actions so the caller can execute newly-clean
         blocks and obtain fresh tactile observations.
-        """
-        def _step(x_t, params):
-            t_curr, dt_curr = params
-            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, t_curr, tactile_tokens=tactile_tokens,
-            )
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_attn_mask_local = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            full_attn_mask = jnp.concatenate([prefix_attn_mask_local, suffix_attn_mask], axis=-1)
-            positions_local = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-            (_, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens],
-                mask=full_attn_mask,
-                positions=positions_local,
-                kv_cache=kv_cache,
-                adarms_cond=[None, adarms_cond],
-            )
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-            return x_t + dt_curr[..., None] * v_t, None
 
-        x_out, _ = jax.lax.scan(_step, x_t, (t_starts_seg, dt_seg))
+        When ``tac_expert_noise`` is provided and ``use_tactile_expert`` is True,
+        the tactile expert (independent Transformer) runs in parallel, denoising
+        from noise to predicted future tactile within this segment.
+        """
+        num_seg_steps = t_starts_seg.shape[0]
+        prefix_ar_mask = jnp.zeros(prefix_tokens.shape[1], dtype=jnp.bool_)
+
+        def _step(carry, params):
+            x_t_local, tac_x_t, step_idx = carry
+            t_curr, dt_curr = params
+
+            suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms = self.embed_suffix(
+                observation, x_t_local, t_curr, tactile_tokens=tactile_tokens,
+            )
+
+            tac_expert_tokens_local = None
+            tac_expert_mask_local = None
+            tac_expert_ar_mask_local = None
+            tac_adarms_local = None
+            if tac_x_t is not None and self.use_tactile_expert:
+                tac_t = jnp.clip(1.0 - step_idx / num_seg_steps, 0.0, 1.0)
+                tac_time = jnp.broadcast_to(tac_t, tac_x_t.shape[:2])
+                tac_expert_tokens_local, tac_expert_mask_local, tac_expert_ar_mask_local, tac_adarms_local = (
+                    self.embed_tactile_expert(tac_x_t, tac_time)
+                )
+
+            suffix_out, tac_expert_out, _ = self._forward_3expert(
+                prefix_tokens, prefix_mask, prefix_ar_mask,
+                suffix_tokens, suffix_mask, suffix_ar_mask, action_adarms,
+                tac_expert_tokens_local, tac_expert_mask_local, tac_expert_ar_mask_local, tac_adarms_local,
+                kv_cache=kv_cache, use_kv_cache=True,
+            )
+
+            # Action Euler step
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon:])
+            x_t_new = x_t_local + dt_curr[..., None] * v_t
+
+            # Tactile expert Euler step
+            tac_x_t_new = tac_x_t
+            if tac_x_t is not None and self.use_tactile_expert and tac_expert_out is not None:
+                tac_v = self.tac_expert_out_proj(tac_expert_out)
+                tac_dt = -1.0 / num_seg_steps
+                tac_x_t_new = tac_x_t + tac_dt * tac_v
+
+            return (x_t_new, tac_x_t_new, step_idx + 1), None
+
+        init_carry = (x_t, tac_expert_noise, 0)
+        (x_out, _, _), _ = jax.lax.scan(_step, init_carry, (t_starts_seg, dt_seg))
         return x_out

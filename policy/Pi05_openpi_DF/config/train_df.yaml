@@ -30,20 +30,35 @@ block_time_sampling: monotone
 use_tactile: true
 tactile_tokens_per_finger: 16
 # 触觉数据集路径（仅在 use_tactile=true 时使用，覆盖默认 DATASET_ROOT）
-tactile_dataset_root: "/data1/zjb/data_lerobot_openpi_df_tactile"
+tactile_dataset_root: "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"
+
+# ─── Tactile expert (future tactile prediction) ──────────────────────────────
+# 启用后，新增一个 flow matching 流与 action 同步去噪，预测下一个 block 边界
+# 的未来触觉 latent。两个 expert 互相 attend，action 从中获得前瞻触觉信息，
+# 同时触觉预测提供 dense 辅助监督信号增强触觉/动作表征。
+# 需要 use_tactile=true 作为前置条件。
+use_tactile_expert: true
+# Tactile expert 的 Transformer 架构（独立参数，与 action expert 同深度）
+# gemma_300m: width=1024, depth=18, ~311M params（与 action expert 对称）
+tactile_expert_variant: "gemma_300m"
+# 预测 token 数（= num_tactile_tokens = tactile_tokens_per_finger * 2）
+tactile_expert_num_tokens: 32
+# 触觉预测 velocity loss 的权重（相对于 action loss）
+tactile_expert_loss_weight: 0.5
 
 # ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
 # true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。
 # 典型用法：warm start 已微调过的 ckpt 改造成 DF 时，只训 action_expert，
 #   其余全部冻结 —— 即 img/paligemma/projections 设 true、action_expert 设 false。
 freeze:
-  img:            false   # SigLIP 图像编码器
-  paligemma:      false   # PaliGemma 主干 (gemma_2b, prefix LLM)
+  img:            true   # SigLIP 图像编码器
+  paligemma:      true  # PaliGemma 主干 (gemma_2b, prefix LLM)
   action_expert:  false   # Action Expert (gemma_300m, 去噪/速度预测)
   projections:    false   # action_in_proj / action_out_proj / time_mlp_in / time_mlp_out / state_proj
+  tactile_expert_freeze: false  # Tactile Expert 的 tac_expert_* 投影层
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
-batch_size: 32      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+batch_size: 128      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
 steps: 30000
 lr: 5e-5
 warmup_steps: 1000
@@ -59,18 +74,18 @@ seed: 42
 # keep_period: 额外永久保留满足 step % keep_period == 0 的里程碑 ckpt。
 #   null  → 只保留最新 1 个（最省磁盘，推荐）
 #   5000  → 额外保留 step 5000/10000/... 的 ckpt
-keep_period: null
+keep_period: 5000
 
 # ─── FSDP ─────────────────────────────────────────────────────────────────────
 # 单 GPU 设为 1；多任务多 GPU 推荐设为 GPU 数量（须为 2 的幂次：1/2/4/8）
 fsdp_devices: 4
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
-output_dir: "/data1/zjb/UniVTAC/outputs_openpi_df"
+output_dir: "/data/zjb/ckpts/pi05_df_tac_insert_HDMI"
 
 # ─── WandB ────────────────────────────────────────────────────────────────────
 # 仅记录训练损失等标量，不上传模型参数或 artifact
-wandb: true
+wandb: false
 wandb_project: "univtac-pi05-df"
 
 # ─── AdamW Optimizer ─────────────────────────────────────────────────────────

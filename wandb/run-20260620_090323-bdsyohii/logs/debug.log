@@ -1,0 +1,44 @@
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_setup.py:_flush():81] Current SDK version is 0.27.2
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_setup.py:_flush():81] Configure stats pid to 1086732
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:setup_run_log_directory():723] Logging user logs to /data/zjb/UniVTAC/wandb/run-20260620_090323-bdsyohii/logs/debug.log
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:setup_run_log_directory():724] Logging internal logs to /data/zjb/UniVTAC/wandb/run-20260620_090323-bdsyohii/logs/debug-internal.log
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:init():766] calling init triggers
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:init():771] wandb.init called with sweep_config: {}
+config: {'name': 'pi05_univtac_df', 'project_name': 'univtac-pi05-df', 'exp_name': 'pi05_df_insert_HDMI', 'model': {'action_dim': 32, 'action_horizon': 50, 'max_token_len': 200, 'dtype': 'bfloat16', 'paligemma_variant': 'gemma_2b', 'action_expert_variant': 'gemma_300m', 'pi05': True, 'discrete_state_input': True, 'pytorch_compile_mode': 'max-autotune', 'num_blocks': 10, 'mix_prob': 1.0, 'block_time_sampling': 'monotone', 'use_tactile': True, 'tactile_tokens_per_finger': 16, 'use_tactile_expert': True, 'tactile_expert_variant': 'gemma_300m', 'tactile_expert_num_tokens': 32, 'tactile_expert_loss_weight': 0.5}, 'weight_loader': {'params_path': '/data/zjb/ckpts/pi05_all_128_20k/params'}, 'pytorch_weight_path': None, 'pytorch_training_precision': 'bfloat16', 'lr_schedule': {'warmup_steps': 1000, 'peak_lr': 5e-05, 'decay_steps': 30000, 'decay_lr': 5e-06}, 'optimizer': {'b1': 0.9, 'b2': 0.95, 'eps': 1e-06, 'weight_decay': 1e-10, 'clip_gradient_norm': 1.0}, 'ema_decay': 0.99, 'freeze_filter': Any(PathRegex(pattern=re.compile('.*img.*'), sep='/'), All(PathRegex(pattern=re.compile('.*llm.*'), sep='/'), Not(PathRegex(pattern=re.compile('.*llm.*_1.*'), sep='/')))), 'data': {'repo_id': 'univtac_df_tac/insert_HDMI', 'local_root': '/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile/insert_HDMI', 'assets': {'assets_dir': '/data/zjb/ckpts/pi05_all_128_20k/assets', 'asset_id': 'univtac_all'}, 'base_config': {'repo_id': None, 'root': None, 'asset_id': None, 'norm_stats': None, 'repack_transforms': {'inputs': (), 'outputs': ()}, 'data_transforms': {'inputs': (), 'outputs': ()}, 'model_transforms': {'inputs': (), 'outputs': ()}, 'use_quantile_norm': False, 'action_sequence_keys': ('action',), 'extra_delta_timestamps': None, 'prompt_from_task': True, 'default_prompt': None, 'rlds_data_dir': None, 'action_space': None, 'datasets': ()}, 'data_transforms': <function <lambda> at 0x7fd2f0d64ea0>, 'model_transforms': {'default_prompt': None}, 'default_prompt': 'Insert the HDMI cable into the port.', 'repack_transforms': {'inputs': [{'structure': {'observation/image': 'observation.images.head', 'observation/state': 'observation.state', 'actions': 'action', 'prompt': 'task', 'observation/tactile_left': 'observation.images.tactile_left', 'observation/tactile_right': 'observation.images.tactile_right'}}], 'outputs': ()}, 'extra_delta_timestamps': {'observation.images.tactile_left': [0.0, 0.08333333333333333, 0.16666666666666666, 0.25, 0.3333333333333333, 0.4166666666666667, 0.5, 0.5833333333333334, 0.6666666666666666, 0.75], 'observation.images.tactile_right': [0.0, 0.08333333333333333, 0.16666666666666666, 0.25, 0.3333333333333333, 0.4166666666666667, 0.5, 0.5833333333333334, 0.6666666666666666, 0.75]}}, 'assets_base_dir': '/data/zjb/ckpts/pi05_df_tac_insert_HDMI/assets', 'checkpoint_base_dir': '/data/zjb/ckpts/pi05_df_tac_insert_HDMI/checkpoints', 'seed': 42, 'batch_size': 128, 'num_workers': 4, 'num_train_steps': 30000, 'log_interval': 50, 'save_interval': 2000, 'keep_period': 5000, 'overwrite': True, 'resume': False, 'wandb_enabled': True, 'policy_metadata': None, 'fsdp_devices': 4, '_wandb': {}}
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:init():814] starting backend
+2026-06-20 09:03:23,309 INFO    MainThread:1086732 [wandb_init.py:init():829] sending inform_init request
+2026-06-20 09:03:23,957 INFO    MainThread:1086732 [wandb_init.py:init():834] backend started and connected
+2026-06-20 09:03:23,961 INFO    MainThread:1086732 [wandb_init.py:init():904] updated telemetry
+2026-06-20 09:03:23,967 INFO    MainThread:1086732 [wandb_init.py:init():927] communicating run to backend with 90.0 second timeout
+2026-06-20 09:03:24,441 INFO    MainThread:1086732 [wandb_init.py:init():972] starting run threads in backend
+2026-06-20 09:03:24,628 INFO    MainThread:1086732 [wandb_run.py:_console_start():2523] atexit reg
+2026-06-20 09:03:24,628 INFO    MainThread:1086732 [wandb_run.py:_redirect():2373] redirect: wrap_raw
+2026-06-20 09:03:24,628 INFO    MainThread:1086732 [wandb_run.py:_redirect():2442] Wrapping output streams.
+2026-06-20 09:03:24,628 INFO    MainThread:1086732 [wandb_run.py:_redirect():2465] Redirects installed.
+2026-06-20 09:03:24,629 INFO    MainThread:1086732 [wandb_init.py:init():1010] run started, returning control to user process
+2026-06-20 09:04:24,805 INFO    wandb-AsyncioManager-main:1086732 [service_client.py:_forward_responses():122] [no run ID] Reached EOF.
+2026-06-20 09:04:24,805 INFO    wandb-AsyncioManager-main:1086732 [mailbox.py:close():154] [no run ID] Closing mailbox, abandoning 2 handles.
+2026-06-20 09:04:24,806 ERROR   wandb-AsyncioManager-main:1086732 [asyncio_manager.py:fn_wrap_exceptions():184] Uncaught exception in run_soon callback.
+Traceback (most recent call last):
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/asyncio_manager.py", line 182, in fn_wrap_exceptions
+    await fn()
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/run_messages.py", line 90, in loop
+    await asyncio_compat.race(
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/asyncio_compat.py", line 278, in race
+    async with open_task_group(race=True) as tg:
+  File "/home/zjb/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/contextlib.py", line 217, in __aexit__
+    await anext(self.gen)
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/asyncio_compat.py", line 240, in open_task_group
+    await task_group._wait_all(race=race, timeout=exit_timeout)
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/asyncio_compat.py", line 180, in _wait_all
+    raise exc
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/run_messages.py", line 113, in _print_all
+    result = await handle.wait_async(timeout=None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/mailbox/mailbox_handle.py", line 127, in wait_async
+    response = await self._handle.wait_async(timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/mailbox/response_handle.py", line 123, in wait_async
+    raise HandleAbandonedError()
+wandb.sdk.mailbox.mailbox_handle.HandleAbandonedError
