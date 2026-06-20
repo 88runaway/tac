@@ -81,7 +81,6 @@ class JAXInferenceServer:
         self.action_horizon = 50
         self.n_action_steps = 10
         self.num_inference_steps = None  # None → use openpi default (10)
-
         self._action_queue: list[np.ndarray] = []
 
     def handle_init(self, args: dict):

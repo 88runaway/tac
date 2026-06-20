@@ -1,0 +1,33 @@
+# Pi0DF 部署配置（由 eval_policy.py 加载）
+#
+# 对应 policy_name: Pi05_openpi_DF → policy/Pi05_openpi_DF/__init__.py → deploy_policy_df.py
+
+policy_name: Pi05_openpi_DF
+
+# ckpt_dir: 由 deploy_policy_df.py 从 CKPT_DIR 环境变量解析，或直接在此指定
+ckpt_dir: /data1/zjb/UniVTAC/outputs_openpi_df/checkpoints/pi05_univtac_df/pi05_df_insert_HDMI/2000
+
+# openpi config name —— 必须为 *_df（Pi0DFConfig）
+config_name: pi05_univtac_df
+
+instruction_type: seen
+instuction_file: null
+
+# ─── 推理参数 ────────────────────────────────────────────────────────────────
+# n_action_steps: 每次推理后连续执行的动作步数
+n_action_steps: 50
+
+# num_inference_steps: 去噪总步数。blockwise 时建议 = action_horizon（50），
+#   使每个 block 都有 block_size 步去噪
+num_inference_steps: 50
+
+# ─── Diffusion Forcing 参数 ───────────────────────────────────────────────────
+# infer_time_schedule:
+#   blockwise : 金字塔调度（默认）——所有 block 同时去噪，靠前的先 clean
+#   const     : 标准去噪（退化为 pi05 行为，可用于消融实验）
+infer_time_schedule: blockwise
+
+# block_size: 覆盖训练 config 的 num_blocks，仅影响推理调度。
+#   null = 使用训练时的 num_blocks（推荐）
+#   例：action_horizon=50, block_size=5 → 10 block，第5/10/.../50步依次 clean
+block_size: 5

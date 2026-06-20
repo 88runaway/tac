@@ -90,6 +90,7 @@ class Policy(BasePolicy):
         self.camera_type = task_settings[self.task_name].get("camera_type", "head")
 
         ckpt_dir = self._resolve_ckpt_dir(args)
+        args["ckpt_dir"] = str(ckpt_dir)
         print(f"[Pi05_JAX] Checkpoint: {ckpt_dir}")
 
         self._n_action_steps = 10
@@ -102,14 +103,28 @@ class Policy(BasePolicy):
         if num_inference_steps is not None and str(num_inference_steps).strip() not in ("", "null", "None"):
             self._num_inference_steps = int(num_inference_steps)
 
+        # Diffusion forcing inference options (only used by Pi0DF checkpoints)
+        self._infer_time_schedule = None
+        infer_time_schedule = args.get("infer_time_schedule")
+        if infer_time_schedule is not None and str(infer_time_schedule).strip() not in ("", "null", "None"):
+            self._infer_time_schedule = str(infer_time_schedule).strip()
+
+        # block_size: overrides the training-config num_blocks for the blockwise schedule.
+        # num_blocks = action_horizon // block_size (computed in the server after model load).
+        self._block_size = None
+        block_size = args.get("block_size")
+        if block_size is not None and str(block_size).strip() not in ("", "null", "None"):
+            self._block_size = int(block_size)
+
         self._socket_path = tempfile.mktemp(prefix="/tmp/pi05_jax_sock_")
         self._sock = None
         self._proc = None
         self._start_server(ckpt_dir, args)
 
         ni_str = str(self._num_inference_steps) if self._num_inference_steps is not None else "default(10)"
+        bs_str = str(self._block_size) if self._block_size is not None else "default(from config)"
         print(f"[Pi05_JAX] Server ready. n_action_steps={self._n_action_steps}, "
-              f"num_inference_steps={ni_str}, camera={self.camera_type}")
+              f"num_inference_steps={ni_str}, block_size={bs_str}, camera={self.camera_type}")
 
     def _start_server(self, ckpt_dir: Path, args: dict):
         """Launch JAX inference server subprocess and perform handshake."""
@@ -157,6 +172,8 @@ class Policy(BasePolicy):
             "camera_type": self.camera_type,
             "n_action_steps": self._n_action_steps,
             "num_inference_steps": self._num_inference_steps,
+            "infer_time_schedule": self._infer_time_schedule,
+            "block_size": self._block_size,
         }
 
         _send_msg(self._sock, _encode({"cmd": "init", "args": init_args}))

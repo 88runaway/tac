@@ -58,3 +58,13 @@ IsaacLab/
 third_party/
 outputs/
 data_lerobot/
+ckpt/
+data_lerobot_openpi/
+diffusion-forcing/
+FASTER/
+openpi/.venv/
+openpi/third_party/
+openpi/checkpoints/
+outputs_openpi_df/
+rnrdp/
+T-Rex/

@@ -23,3 +23,11 @@ instuction_file: null
 #   openpi pi0.5 默认值为 10；减小可加速推理，增大可提升动作质量
 #   null 表示使用模型默认值（10）
 num_inference_steps: 50
+
+# ─── Diffusion Forcing 推理参数（仅对 Pi0DF / pi05_univtac_df checkpoint 生效）────
+# infer_time_schedule: 去噪时间调度
+#   const     : 标准 pi05 去噪（所有 token 噪声等级一致），默认值
+#   blockwise : 金字塔调度——所有 block 在 num_inference_steps 步内同时去噪，但靠前的 block
+#               去噪更快、更早 clean（block k 在 (k+1)/num_blocks * num_inference_steps 步 clean）。
+#               总前向步数仍为 num_inference_steps，不膨胀。num_blocks 由训练 config 决定。
+infer_time_schedule: const

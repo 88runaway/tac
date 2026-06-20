@@ -1,21 +1,26 @@
-# ─── UniVTAC Pi0.5 JAX (openpi) Evaluation Configuration ─────────────────────
+# ─── UniVTAC Pi0.5 Diffusion Forcing (Pi0DF) Evaluation Configuration ─────────
 #
-# 所有评估参数集中在此文件，eval.sh 从中读取。
+# 用于评估 block-wise Diffusion Forcing checkpoint（由 train_pi05_openpi.py
+# --diffusion_forcing 训练得到，exp 名后缀为 _df）。
+#
+# 与 eval.yaml 的区别仅在于：
+#   - config_name: pi05_univtac_df   （加载 Pi0DFConfig，否则 DF 推理不生效）
+#   - infer_time_schedule: blockwise （逐 block 自回归去噪）
 #
 # Usage:
-#   bash policy/Pi05_openpi/sh/eval.sh                        # 使用本文件全部默认值
-#   bash policy/Pi05_openpi/sh/eval.sh lift_bottle            # 覆盖 task_name
+#   EVAL_CONFIG=eval_df bash policy/Pi05_openpi/sh/eval.sh
+#   EVAL_CONFIG=eval_df bash policy/Pi05_openpi/sh/eval.sh lift_bottle 1
 #
 # ─── 任务 ────────────────────────────────────────────────────────────────────
 task_name: lift_bottle          # 要评估的任务（task_settings.json 中的 key）
 task_config: demo               # Isaac Lab 任务配置文件名（task_config/<name>.yml）
 
 # ─── Checkpoint ───────────────────────────────────────────────────────────────
-# JAX checkpoint 路径（orbax 格式），必须直接指定
+# JAX checkpoint 路径（orbax 格式），必须为 DF 训练得到的 checkpoint
 ckpt_dir: "/data1/zjb/ckpt/lerobot/pi05_jax/all/64_10k"
 
-# openpi training config name (用于构建 data transforms / norm stats)
-config_name: pi05_univtac
+# openpi training config name —— 必须为 *_df（Pi0DFConfig），否则 blockwise 调度不生效
+config_name: pi05_univtac_df
 
 # ─── 硬件 ─────────────────────────────────────────────────────────────────────
 gpu_id: "1"                     # CUDA_VISIBLE_DEVICES，多卡示例："0,1"
@@ -27,20 +32,26 @@ max_seed: -1                    # 终止 seed（-1 = 不限）
 
 # ─── 推理参数 ─────────────────────────────────────────────────────────────────
 # n_action_steps: 每次推理后连续执行的动作步数（action chunking）
-#   openpi pi05 模型输出 action_horizon=50 步，此处取前 n_action_steps 步执行
 n_action_steps: 50
 
-# num_inference_steps: flow-matching denoising 步数（即 openpi sample_actions 的 num_steps）
-#   默认 10；减小可加速推理，增大可提升动作质量（通常 5~20 之间）
+# num_inference_steps: blockwise 金字塔调度的总外层去噪步数（= sample_actions 的 num_steps）
+#   所有 block 在这 num_inference_steps 步内同时去噪；block k 在 (k+1)/num_blocks * num_inference_steps
+#   步达到 clean。建议设较大（例如 = action_horizon=50），否则靠前的 block 去噪过粗。
+#   例：num_blocks=10、num_inference_steps=50 → block1 在第5步、block2 在第10步…block10 在第50步 clean。
 num_inference_steps: 50
 
-# ─── Diffusion Forcing（仅对 pi05_univtac_df / Pi0DF checkpoint 生效）─────────────
+# ─── Diffusion Forcing ────────────────────────────────────────────────────────
 # infer_time_schedule: const（标准去噪）| blockwise（金字塔：所有 block 同时去噪、靠前的先 clean）
-#   blockwise 总前向步数 = num_inference_steps（不膨胀）；block 数由训练 config 的 num_blocks 决定
-infer_time_schedule: const
+infer_time_schedule: blockwise
+
+# block_size: 每个 block 包含的 action token 数。
+#   决定 num_blocks = action_horizon / block_size（须能整除）。
+#   覆盖训练 config 中的 num_blocks，仅影响推理调度，不改变权重。
+#   null = 使用训练时的 num_blocks（默认行为）。
+#   例：action_horizon=50, block_size=5 → 10 个 block，第 5/10/.../50 步依次 clean。
+block_size: null
 
 # decimation: 每次 take_action 执行的 physics substep 数
-#   仿真 dt=1/120s，decimation=N → 每次动作执行 N/120 秒
 decimation: 1
 
 # ─── 指令 ─────────────────────────────────────────────────────────────────────

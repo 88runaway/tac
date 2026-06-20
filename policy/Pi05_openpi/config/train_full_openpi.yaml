@@ -1,0 +1,30 @@
+# ─── UniVTAC Pi0.5 OpenPI (JAX) Full Fine-tuning Configuration ───────────────
+#
+# Full parameter fine-tuning using the OpenPI JAX framework.
+# Uses pi05_base checkpoint from /data1/zjb/ckpt/openpi-assets/checkpoints/pi05_base
+#
+# Usage:
+#   bash policy/Pi05_openpi/sh/train_openpi.sh lift_bottle 0 train_full_openpi
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── UniVTAC Model Type ──────────────────────────────────────────────────────
+# Controls input modality:
+#   vision_only : head + wrist cameras only (default)
+#   tactile     : vision + left/right GelSight Mini tactile images
+model: vision_only
+
+# ─── Training Hyperparameters ─────────────────────────────────────────────────
+batch_size: 4
+steps: 10000
+lr: 5e-5
+warmup_steps: 1000
+save_freq: 1000
+log_freq: 50
+num_workers: 4
+action_horizon: 50
+save_best_only: true
+
+# ─── WandB Logging ───────────────────────────────────────────────────────────
+# Pass --wandb flag to train_openpi.sh to enable
+wandb_project: "univtac-pi05-openpi"

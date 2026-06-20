@@ -1,0 +1,82 @@
+# ─── UniVTAC Pi0.5-DF Training Configuration ────────────────────────────────
+#
+# 同时用于单任务和多任务训练，均通过 train_df.py 调用。
+#
+# 单任务:  python policy/Pi05_openpi_DF/train_df.py --task lift_bottle --gpu 0
+# 多任务:  python policy/Pi05_openpi_DF/train_df.py --task all --gpu 0,1,2,3
+#
+# ─── Diffusion Forcing ────────────────────────────────────────────────────────
+# block_size: 每个 block 包含的 action token 数
+#   训练时 num_blocks = action_horizon // block_size（须整除）
+#   推理时可通过 deploy_df.yml 中的 block_size 覆盖
+block_size: 5
+
+# mix_prob: 训练时以该概率使用逐 block 独立噪声（DF），
+#   其余概率退化为全 chunk 共享噪声（标准 flow matching），用于稳定训练
+#   1.0 = 完全 DF；0.0 = 完全标准 flow matching；推荐从 0.5 开始
+mix_prob: 1.0
+
+# block_time_sampling: DF 分支里每个 block 的噪声等级如何采样
+#   independent : 每个 block 独立随机采样噪声等级（原始行为）
+#   monotone    : 由单个全局进度标量映射出“固定单调递增”的逐 block 噪声等级
+#                 （靠前 block 更早 clean），与推理 blockwise 金字塔调度完全同分布，
+#                 可避免训练分布覆盖不到推理状态而导致的抖动，推荐使用
+block_time_sampling: monotone
+
+# ─── Tactile injection (optional) ─────────────────────────────────────────────
+# 启用后，触觉 rgb_marker 图像通过 ResNet-18 编码为 16 token/指（共 32 token）
+# 注入 action expert suffix，由 block 进度标量决定使用哪帧触觉。
+# 需要用 convert_df_tactile.py 转出的带触觉的数据集。
+use_tactile: true
+tactile_tokens_per_finger: 16
+# 触觉数据集路径（仅在 use_tactile=true 时使用，覆盖默认 DATASET_ROOT）
+tactile_dataset_root: "/data1/zjb/data_lerobot_openpi_df_tactile"
+
+# ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
+# true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。
+# 典型用法：warm start 已微调过的 ckpt 改造成 DF 时，只训 action_expert，
+#   其余全部冻结 —— 即 img/paligemma/projections 设 true、action_expert 设 false。
+freeze:
+  img:            false   # SigLIP 图像编码器
+  paligemma:      false   # PaliGemma 主干 (gemma_2b, prefix LLM)
+  action_expert:  false   # Action Expert (gemma_300m, 去噪/速度预测)
+  projections:    false   # action_in_proj / action_out_proj / time_mlp_in / time_mlp_out / state_proj
+
+# ─── 训练超参 ─────────────────────────────────────────────────────────────────
+batch_size: 32      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+steps: 30000
+lr: 5e-5
+warmup_steps: 1000
+save_freq: 2000    # 每隔多少步保存一次 checkpoint
+log_freq: 50
+num_workers: 4
+action_horizon: 50
+ema: true
+seed: 42
+
+# ─── Checkpoint 保留策略 ──────────────────────────────────────────────────────
+# orbax CheckpointManager 硬编码 max_to_keep=1，始终只保留最新 1 个 ckpt。
+# keep_period: 额外永久保留满足 step % keep_period == 0 的里程碑 ckpt。
+#   null  → 只保留最新 1 个（最省磁盘，推荐）
+#   5000  → 额外保留 step 5000/10000/... 的 ckpt
+keep_period: null
+
+# ─── FSDP ─────────────────────────────────────────────────────────────────────
+# 单 GPU 设为 1；多任务多 GPU 推荐设为 GPU 数量（须为 2 的幂次：1/2/4/8）
+fsdp_devices: 4
+
+# ─── 输出目录 ─────────────────────────────────────────────────────────────────
+output_dir: "/data1/zjb/UniVTAC/outputs_openpi_df"
+
+# ─── WandB ────────────────────────────────────────────────────────────────────
+# 仅记录训练损失等标量，不上传模型参数或 artifact
+wandb: true
+wandb_project: "univtac-pi05-df"
+
+# ─── AdamW Optimizer ─────────────────────────────────────────────────────────
+# optimizer:
+#   b1: 0.9
+#   b2: 0.95
+#   eps: 1.0e-6
+#   weight_decay: 1.0e-10
+#   clip_gradient_norm: 1.0

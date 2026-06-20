@@ -1,0 +1,47 @@
+# ─── UniVTAC Pi0.5 OpenPI (JAX) Multi-Task Full Fine-tuning Configuration ────
+#
+# Full parameter fine-tuning using the OpenPI JAX framework.
+# Uses pi05_base checkpoint from /data1/zjb/ckpt/openpi-assets/checkpoints/pi05_base
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── UniVTAC Model Type ──────────────────────────────────────────────────────
+# Controls input modality:
+#   vision_only : head + wrist cameras only (default)
+#   tactile     : vision + left/right GelSight Mini tactile images
+model: vision_only
+
+# ─── Training Hyperparameters ─────────────────────────────────────────────────
+batch_size: 128
+steps: 3000
+warmup_steps: 500
+save_freq: 1000
+log_freq: 50
+num_workers: 4
+action_horizon: 50
+save_best_only: true
+
+# ─── FSDP (Fully Sharded Data Parallel) ──────────────────────────────────────
+# Must satisfy TWO conditions:
+#   1. fsdp_devices must divide jax.device_count() (number of visible GPUs)
+#   2. fsdp_devices must divide the model weight dimensions (powers of 2: 1,2,4,8...)
+#      Pi0.5 weights are multiples of 2, so use 1/2/4/8 only. 5 will NOT work.
+# Recommended: use 4 GPUs (--gpu 0,1,2,3) with fsdp_devices=4 for full FSDP.
+fsdp_devices: 4
+
+# ─── Output Directory ────────────────────────────────────────────────────────
+# Checkpoints and assets will be saved under this directory.
+output_dir: "/data1/zjb/outputs_openpi"
+
+# ─── WandB Logging ───────────────────────────────────────────────────────────
+# Pass --wandb flag to train_openpi.sh to enable
+wandb_project: "jax-pi-multi"
+
+lr: 5.0e-5
+
+optimizer:
+  b1: 0.9
+  b2: 0.95
+  eps: 1.0e-6
+  weight_decay: 1.0e-10
+  clip_gradient_norm: 1.0
