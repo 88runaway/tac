@@ -32,5 +32,12 @@ python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 4,5,6,7 \
     --block_time_sampling monotone --mix_prob 1.0 \
     --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
 
+
+python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 4,5,6,7 \
+    --use_tactile true --use_tactile_expert true \
+    --tactile_expert_loss_weight 0.5 \
+    --block_time_sampling monotone --mix_prob 1.0 \
+    --resume
+
 # 4. 评估（block 级触觉反馈 + tactile expert mutual attention）
 # 在 deploy config 中设置 use_tactile: true; tactile expert 自动从 ckpt 加载

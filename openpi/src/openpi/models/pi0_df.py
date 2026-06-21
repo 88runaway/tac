@@ -388,14 +388,21 @@ class Pi0DF(_model.BaseModel):
         idx = jnp.arange(b)
         sel_left = tac_left[idx, c]    # (b, H, W, 3)
         sel_right = tac_right[idx, c]  # (b, H, W, 3)
-        current_tactile_tokens = self.encode_tactile(sel_left, sel_right, train=train)
 
-        future_tactile_target = None
         if self.use_tactile_expert:
+            # Batch current + future into a single ResNet forward to halve encoder cost:
+            # instead of 4 separate (b, H, W, 3) passes, run 2 passes each on (2b, H, W, 3).
             c_next = jnp.clip(c + 1, 0, self.num_blocks - 1)
             fut_left = tac_left[idx, c_next]    # (b, H, W, 3)
             fut_right = tac_right[idx, c_next]  # (b, H, W, 3)
-            future_tactile_target = self.encode_tactile(fut_left, fut_right, train=train)
+            all_left = jnp.concatenate([sel_left, fut_left], axis=0)    # (2b, H, W, 3)
+            all_right = jnp.concatenate([sel_right, fut_right], axis=0) # (2b, H, W, 3)
+            all_tokens = self.encode_tactile(all_left, all_right, train=train)  # (2b, nt, emb)
+            current_tactile_tokens = all_tokens[:b]
+            future_tactile_target = all_tokens[b:]
+        else:
+            current_tactile_tokens = self.encode_tactile(sel_left, sel_right, train=train)
+            future_tactile_target = None
 
         return current_tactile_tokens, future_tactile_target
 

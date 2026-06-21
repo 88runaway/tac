@@ -9,6 +9,10 @@
 # block_size: 每个 block 包含的 action token 数
 #   训练时 num_blocks = action_horizon // block_size（须整除）
 #   推理时可通过 deploy_df.yml 中的 block_size 覆盖
+#   ⚡ 性能提示: num_blocks 越大，每样本加载的触觉帧越多（左右各 num_blocks 帧）。
+#   减小 block_size（增大 block_size 数值）可降低 num_blocks，从而减少 I/O 压力：
+#     block_size=5  → num_blocks=10 → 每样本 20 帧触觉（较慢，时间分辨率高）
+#     block_size=10 → num_blocks=5  → 每样本 10 帧触觉（较快，推荐初步实验）
 block_size: 5
 
 # mix_prob: 训练时以该概率使用逐 block 独立噪声（DF），
@@ -64,7 +68,12 @@ lr: 5e-5
 warmup_steps: 1000
 save_freq: 2000    # 每隔多少步保存一次 checkpoint
 log_freq: 50
-num_workers: 4
+# 每个 DataLoader worker 进程数。触觉数据集每样本包含 num_blocks 帧触觉图，
+# 建议设为 8~12（取决于 CPU 核数），以保证 GPU 不等 CPU。
+num_workers: 12
+# 每个 worker 提前预取的 batch 数（None = PyTorch 默认 2）。
+# 触觉数据批量大时推荐设为 4，可减少 worker 空档期。
+prefetch_factor: 4
 action_horizon: 50
 ema: true
 seed: 42

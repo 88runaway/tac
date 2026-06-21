@@ -3,6 +3,8 @@ import dataclasses
 import functools
 import logging
 import platform
+import queue
+import threading
 from typing import Any
 
 import etils.epath as epath
@@ -134,6 +136,51 @@ def init_train_state(
     return train_state, state_sharding
 
 
+class _NumpyPrefetchIterator:
+    """Prefetch numpy batches in a background thread without touching JAX.
+
+    The PyTorch DataLoader worker interaction (which is the slow part) runs in
+    the background thread.  The background thread never calls any JAX API, so
+    it is immune to the JAX global-interpreter-lock contention that crippled
+    the old ``_PrefetchIterator`` (which converted to JAX arrays in the
+    background thread and got serialised with ``jax.device_get``).
+
+    The caller is responsible for converting the returned numpy batch to JAX
+    arrays in the main thread (fast DMA, overlaps with GPU compute).
+    """
+
+    def __init__(self, numpy_iter, buf_size: int = 8):
+        self._q: queue.Queue = queue.Queue(maxsize=buf_size)
+        self._stop = False
+
+        def _worker():
+            try:
+                while not self._stop:
+                    try:
+                        item = next(numpy_iter)
+                    except StopIteration:
+                        break
+                    self._q.put(item)
+            except Exception as exc:
+                self._q.put(exc)
+            finally:
+                self._q.put(None)
+
+        self._thread = threading.Thread(target=_worker, daemon=True)
+        self._thread.start()
+
+    def __next__(self):
+        item = self._q.get()
+        if item is None:
+            raise StopIteration
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def __iter__(self):
+        return self
+
+
 @at.typecheck
 def train_step(
     config: _config.TrainConfig,
@@ -244,8 +291,20 @@ def main(config: _config.TrainConfig):
         sharding=data_sharding,
         shuffle=True,
     )
-    data_iter = iter(data_loader)
-    batch = next(data_iter)
+
+    # Split data pipeline: numpy prefetch (background, no JAX) → JAX convert (main thread).
+    _torch_dl = data_loader.torch_data_loader
+    _dl_sharding = _torch_dl.sharding
+
+    def _numpy_to_model_batch(np_batch):
+        jax_batch = jax.tree.map(
+            lambda x: jax.make_array_from_process_local_data(_dl_sharding, x),
+            np_batch,
+        )
+        return _model.Observation.from_dict(jax_batch), jax_batch["actions"]
+
+    numpy_prefetch = _NumpyPrefetchIterator(_torch_dl.iter_numpy(), buf_size=8)
+    batch = _numpy_to_model_batch(next(numpy_prefetch))
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
     # Log images from first batch to sanity check.
@@ -289,21 +348,42 @@ def main(config: _config.TrainConfig):
     if _write_header:
         _loss_csv.writerow(["step", "loss", "action_loss", "tac_loss", "grad_norm", "act_param_norm", "tac_param_norm"])
 
-    infos = []
+    # Accumulate info on-device to avoid costly jax.device_get sync that stalls
+    # the GPU pipeline.  Only sync the small running-mean scalars at log time.
+    _acc_info: dict[str, Any] | None = None
+    _acc_count = 0
+
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
-        infos.append(info)
+
+        if _acc_info is None:
+            _acc_info = jax.tree.map(lambda x: x, info)
+        else:
+            _acc_info = jax.tree.map(lambda a, b: a + b, _acc_info, info)
+        _acc_count += 1
+
+        # Get pre-fetched numpy batch (instant — already in queue) and convert
+        # to JAX arrays in the main thread.  DMA overlaps with GPU compute.
+        batch = _numpy_to_model_batch(next(numpy_prefetch))
+
+        # Pace: wait for the current GPU step to finish before dispatching
+        # the next one. This prevents the async dispatch queue from growing
+        # unboundedly, which would cause long device_get stalls at log time.
+        jax.block_until_ready(train_state)
+
         if step % config.log_interval == 0:
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            # GPU is already synced by block_until_ready above, so
+            # device_get returns almost instantly (just copies scalars).
+            reduced_info = jax.device_get(
+                jax.tree.map(lambda x: x / _acc_count, _acc_info)
+            )
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             try:
                 wandb.log(reduced_info, step=step)
             except Exception as _e:
                 logging.warning(f"wandb.log failed (non-fatal): {_e}")
-            # Always write to txt regardless of wandb status
             _loss_csv.writerow([
                 step,
                 reduced_info.get("loss", ""),
@@ -313,8 +393,8 @@ def main(config: _config.TrainConfig):
                 reduced_info.get("act_param_norm", ""),
                 reduced_info.get("tac_param_norm", ""),
             ])
-            infos = []
-        batch = next(data_iter)
+            _acc_info = None
+            _acc_count = 0
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)

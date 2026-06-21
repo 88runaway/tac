@@ -309,7 +309,7 @@ def _collate(items):
 
 # ─── norm stats ───────────────────────────────────────────────────────────────
 
-def _resolve_norm_stats(args, default_dir: Path, task_name: str) -> Path:
+def _resolve_norm_stats(args, default_dir: Path, task_name: str, dataset_dir: str | None = None) -> Path:
     """Resolve norm stats directory: default path → warm start ckpt → compute.
 
     Search order:
@@ -334,20 +334,27 @@ def _resolve_norm_stats(args, default_dir: Path, task_name: str) -> Path:
 
     # 3. 计算
     print(f"[norm_stats] Not found, computing for {task_name} ...")
-    return _compute_norm_stats_from_parquet(task_name)
+    return _compute_norm_stats_from_parquet(task_name, dataset_dir=dataset_dir)
 
 
-def _compute_norm_stats_from_parquet(task_name: str) -> Path:
-    """Compute norm stats directly from parquet files, bypassing LeRobotDataset."""
+def _compute_norm_stats_from_parquet(task_name: str, dataset_dir: str | None = None) -> Path:
+    """Compute norm stats directly from parquet files, bypassing LeRobotDataset.
+
+    Args:
+        task_name: Task name used for output path naming.
+        dataset_dir: Root directory of the LeRobot dataset for this task. When None,
+            falls back to DATASET_ROOT / task_name (non-tactile default).
+    """
     import pyarrow.parquet as pq
     import tqdm as _tqdm
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
     import openpi.shared.normalize as normalize
 
-    dataset_dir = DATASET_ROOT / task_name / "data"
-    parquet_files = sorted(dataset_dir.glob("**/*.parquet"))
+    data_root = Path(dataset_dir) if dataset_dir else DATASET_ROOT / task_name
+    parquet_dir = data_root / "data"
+    parquet_files = sorted(parquet_dir.glob("**/*.parquet"))
     if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found in {dataset_dir}")
+        raise FileNotFoundError(f"No parquet files found in {parquet_dir}")
 
     stats = {k: normalize.RunningStats() for k in ["state", "actions"]}
     for pf in _tqdm.tqdm(parquet_files, desc=f"norm_stats {task_name}"):
@@ -447,7 +454,7 @@ def train_singletask(args, task_name: str):
 
     norm_asset_id = f"univtac_{task_name}"
     norm_asset_dir = CKPT_PATH / "assets" / "univtac" / norm_asset_id
-    actual_norm_dir = _resolve_norm_stats(args, norm_asset_dir, task_name)
+    actual_norm_dir = _resolve_norm_stats(args, norm_asset_dir, task_name, dataset_dir=dataset_dir)
 
     # Compute tactile delta_timestamps if needed
     extra_dt = None
@@ -509,6 +516,7 @@ def train_singletask(args, task_name: str):
         num_train_steps=args.steps,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        prefetch_factor=getattr(args, "prefetch_factor", None),
         seed=args.seed,
         log_interval=args.log_freq,
         save_interval=args.save_freq,
@@ -642,6 +650,7 @@ def train_multitask(args):
         num_train_steps=args.steps,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        prefetch_factor=getattr(args, "prefetch_factor", None),
         seed=args.seed,
         log_interval=args.log_freq,
         save_interval=args.save_freq,
@@ -774,6 +783,9 @@ def main():
         ),
     )
     parser.add_argument("--num_workers",    type=int,  default=cfg.get("num_workers", 4))
+    parser.add_argument("--prefetch_factor", type=int,  default=cfg.get("prefetch_factor", None),
+                        help="DataLoader prefetch_factor per worker (None = PyTorch default 2). "
+                             "Values of 4-8 reduce worker stall for large tactile batches.")
     parser.add_argument("--seed",           type=int,  default=cfg.get("seed", 42))
     parser.add_argument("--action_horizon", type=int,  default=cfg.get("action_horizon", 50))
     parser.add_argument("--ema",   action="store_true", default=cfg.get("ema", True))
@@ -819,7 +831,11 @@ def main():
                       f"Known: {list(TASK_INSTRUCTIONS)}")
                 continue
             if args.compute_norm_stats_only:
-                _compute_norm_stats_from_parquet(task)
+                tac_root_path = Path(getattr(args, "tactile_dataset_root",
+                                             "/data1/zjb/data_lerobot_openpi_df_tactile"))
+                ds_dir = str(tac_root_path / task) if getattr(args, "use_tactile", False) \
+                    else str(DATASET_ROOT / task)
+                _compute_norm_stats_from_parquet(task, dataset_dir=ds_dir)
             else:
                 train_singletask(args, task)
 
