@@ -49,10 +49,10 @@ import yaml
 
 SCRIPT_DIR     = Path(__file__).parent
 UNIVTAC_ROOT   = SCRIPT_DIR.parent.parent
-OPENPI_ROOT    = Path("/data1/zjb/UniVTAC/openpi")
-DATASET_ROOT   = Path("/data1/zjb/UniVTAC/data_lerobot_openpi")
+OPENPI_ROOT    = Path("/data/zjb/UniVTAC/openpi")
+DATASET_ROOT   = Path("/data/zjb/UniVTAC/data_lerobot_openpi")
 BASE_FPS       = 60
-CKPT_PATH      = Path("/data1/zjb/ckpt/openpi-assets/checkpoints/pi05_base")
+CKPT_PATH      = Path("/data/zjb/ckpts/pi05_jax")
 TASK_SETTINGS  = UNIVTAC_ROOT / "policy" / "task_settings.json"
 DEFAULT_CFG    = SCRIPT_DIR / "config" / "train_df.yaml"
 DEFAULT_MT_CFG = SCRIPT_DIR.parent / "Pi05_openpi" / "multitask_config.json"
@@ -207,30 +207,49 @@ def _build_freeze_filter(args):
                 ".*(action_in_proj|action_out_proj|time_mlp_in|time_mlp_out|state_proj).*"
             )
         )
+    if getattr(args, "freeze_tactile_expert", False):
+        # Freeze both the projection layers and the third expert's gemma params
+        parts.append(nnx_utils.PathRegex(".*tac_expert.*"))
+        parts.append(nnx_utils.PathRegex(".*_2.*"))
     if not parts:
         return nnx.Nothing
     return nnx.Any(*parts)
 
 
-def _make_weight_loader(params_path: str, use_tactile: bool):
+def _make_weight_loader(params_path: str, use_tactile: bool, use_tactile_expert: bool = False):
     """Build the warm-start weight loader.
 
     The default ``CheckpointWeightLoader`` only back-fills missing params matching
     ``.*lora.*`` from the freshly-initialized model; everything else must exist in
     the checkpoint or ``check_pytree_equality`` fails. When tactile is enabled the
     ``tactile_encoder`` subtree is absent from a (non-tactile) warm-start ckpt, so we
-    widen the missing regex to also let it initialize from scratch.
+    widen the missing regex to also let it initialize from scratch. Similarly for
+    ``tac_expert_*`` params when the tactile expert is newly added.
     """
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
     import openpi.training.weight_loaders as weight_loaders
 
-    if not use_tactile:
+    if not use_tactile and not use_tactile_expert:
         return weight_loaders.CheckpointWeightLoader(params_path)
 
     import dataclasses as _dc
     import numpy as _np
     import openpi.models.model as _model
     import openpi.shared.download as _download
+
+    # Build missing regex: always allow lora; add tactile modules as needed
+    missing_parts = [r".*lora.*"]
+    if use_tactile:
+        missing_parts.append(r".*tactile_encoder.*")
+    if use_tactile_expert:
+        # tac_expert_* projection layers
+        missing_parts.append(r".*tac_expert.*")
+        # Third expert's gemma layers (named with _2 suffix by gemma._name).
+        # Keys look like: PaliGemma/llm/layers/pre_attention_norm_2/scale
+        # or: PaliGemma/llm/final_norm_2/scale
+        # Use .*_2.* to fullmatch any key containing the _2 suffix segment.
+        missing_parts.append(r".*_2.*")
+    missing_regex = "|".join(missing_parts)
 
     @_dc.dataclass(frozen=True)
     class _WarmStartWithTactile(weight_loaders.CheckpointWeightLoader):
@@ -239,7 +258,7 @@ def _make_weight_loader(params_path: str, use_tactile: bool):
                 _download.maybe_download(self.params_path), restore_type=_np.ndarray
             )
             return weight_loaders._merge_params(
-                loaded, params, missing_regex=r".*lora.*|.*tactile_encoder.*"
+                loaded, params, missing_regex=missing_regex
             )
 
     return _WarmStartWithTactile(params_path)
@@ -270,6 +289,10 @@ def _make_model_config(args, num_blocks: int):
         block_time_sampling=args.block_time_sampling,
         use_tactile=getattr(args, "use_tactile", False),
         tactile_tokens_per_finger=getattr(args, "tactile_tokens_per_finger", 16),
+        use_tactile_expert=getattr(args, "use_tactile_expert", False),
+        tactile_expert_variant=getattr(args, "tactile_expert_variant", "gemma_300m"),
+        tactile_expert_num_tokens=getattr(args, "tactile_expert_num_tokens", 32),
+        tactile_expert_loss_weight=getattr(args, "tactile_expert_loss_weight", 0.5),
     )
 
 
@@ -286,7 +309,7 @@ def _collate(items):
 
 # ─── norm stats ───────────────────────────────────────────────────────────────
 
-def _resolve_norm_stats(args, default_dir: Path, task_name: str) -> Path:
+def _resolve_norm_stats(args, default_dir: Path, task_name: str, dataset_dir: str | None = None) -> Path:
     """Resolve norm stats directory: default path → warm start ckpt → compute.
 
     Search order:
@@ -311,20 +334,27 @@ def _resolve_norm_stats(args, default_dir: Path, task_name: str) -> Path:
 
     # 3. 计算
     print(f"[norm_stats] Not found, computing for {task_name} ...")
-    return _compute_norm_stats_from_parquet(task_name)
+    return _compute_norm_stats_from_parquet(task_name, dataset_dir=dataset_dir)
 
 
-def _compute_norm_stats_from_parquet(task_name: str) -> Path:
-    """Compute norm stats directly from parquet files, bypassing LeRobotDataset."""
+def _compute_norm_stats_from_parquet(task_name: str, dataset_dir: str | None = None) -> Path:
+    """Compute norm stats directly from parquet files, bypassing LeRobotDataset.
+
+    Args:
+        task_name: Task name used for output path naming.
+        dataset_dir: Root directory of the LeRobot dataset for this task. When None,
+            falls back to DATASET_ROOT / task_name (non-tactile default).
+    """
     import pyarrow.parquet as pq
     import tqdm as _tqdm
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
     import openpi.shared.normalize as normalize
 
-    dataset_dir = DATASET_ROOT / task_name / "data"
-    parquet_files = sorted(dataset_dir.glob("**/*.parquet"))
+    data_root = Path(dataset_dir) if dataset_dir else DATASET_ROOT / task_name
+    parquet_dir = data_root / "data"
+    parquet_files = sorted(parquet_dir.glob("**/*.parquet"))
     if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found in {dataset_dir}")
+        raise FileNotFoundError(f"No parquet files found in {parquet_dir}")
 
     stats = {k: normalize.RunningStats() for k in ["state", "actions"]}
     for pf in _tqdm.tqdm(parquet_files, desc=f"norm_stats {task_name}"):
@@ -424,7 +454,7 @@ def train_singletask(args, task_name: str):
 
     norm_asset_id = f"univtac_{task_name}"
     norm_asset_dir = CKPT_PATH / "assets" / "univtac" / norm_asset_id
-    actual_norm_dir = _resolve_norm_stats(args, norm_asset_dir, task_name)
+    actual_norm_dir = _resolve_norm_stats(args, norm_asset_dir, task_name, dataset_dir=dataset_dir)
 
     # Compute tactile delta_timestamps if needed
     extra_dt = None
@@ -468,6 +498,7 @@ def train_singletask(args, task_name: str):
         weight_loader=_make_weight_loader(
             args.warm_start_ckpt if args.warm_start_ckpt else str(CKPT_PATH / "params"),
             use_tactile,
+            use_tactile_expert=getattr(args, "use_tactile_expert", False),
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=args.warmup_steps,
@@ -485,6 +516,7 @@ def train_singletask(args, task_name: str):
         num_train_steps=args.steps,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        prefetch_factor=getattr(args, "prefetch_factor", None),
         seed=args.seed,
         log_interval=args.log_freq,
         save_interval=args.save_freq,
@@ -522,6 +554,9 @@ def train_singletask(args, task_name: str):
         print(f"  Freeze:         img={args.freeze_img} paligemma={args.freeze_paligemma} "
               f"action_expert={args.freeze_action_expert} projections={args.freeze_projections}")
         print(f"  Use tactile:    {use_tactile}")
+        if use_tactile and getattr(args, "use_tactile_expert", False):
+            print(f"  Tactile expert: tokens={args.tactile_expert_num_tokens} "
+                  f"loss_weight={args.tactile_expert_loss_weight}")
         print(f"  EMA:            {0.99 if args.ema else 'disabled'}")
         print(f"  keep_period:    {args.keep_period} (None = 只保留最新 ckpt)")
         print(f"  Warm start:     {args.warm_start_ckpt or str(CKPT_PATH / 'params') + ' (pi05_base)'}")
@@ -597,6 +632,7 @@ def train_multitask(args):
         weight_loader=_make_weight_loader(
             args.warm_start_ckpt if args.warm_start_ckpt else str(CKPT_PATH / "params"),
             getattr(args, "use_tactile", False),
+            use_tactile_expert=getattr(args, "use_tactile_expert", False),
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=args.warmup_steps,
@@ -614,6 +650,7 @@ def train_multitask(args):
         num_train_steps=args.steps,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        prefetch_factor=getattr(args, "prefetch_factor", None),
         seed=args.seed,
         log_interval=args.log_freq,
         save_interval=args.save_freq,
@@ -703,6 +740,20 @@ def main():
                         default=cfg.get("tactile_dataset_root", "/data1/zjb/data_lerobot_openpi_df_tactile"),
                         help="触觉数据集根路径")
 
+    # ── Tactile expert (future tactile prediction) ────────────────────────
+    parser.add_argument("--use_tactile_expert", type=_str2bool,
+                        default=cfg.get("use_tactile_expert", False),
+                        help="启用 tactile expert 预测未来触觉（与 action 同步去噪）")
+    parser.add_argument("--tactile_expert_num_tokens", type=int,
+                        default=cfg.get("tactile_expert_num_tokens", 32),
+                        help="Tactile expert 预测的 token 数")
+    parser.add_argument("--tactile_expert_loss_weight", type=float,
+                        default=cfg.get("tactile_expert_loss_weight", 0.5),
+                        help="触觉预测 velocity loss 权重（相对 action loss）")
+    parser.add_argument("--tactile_expert_variant", type=str,
+                        default=cfg.get("tactile_expert_variant", "gemma_300m"),
+                        help="Tactile expert Transformer 架构 (gemma_300m / gemma_2b)")
+
     # ── Module freezing (true = freeze) ───────────────────────────────────────
     fz = cfg.get("freeze", {}) or {}
     parser.add_argument("--freeze_img", type=_str2bool, default=fz.get("img", False),
@@ -713,6 +764,8 @@ def main():
                         help="冻结 Action Expert gemma_300m (true=freeze)")
     parser.add_argument("--freeze_projections", type=_str2bool, default=fz.get("projections", False),
                         help="冻结 action_in_proj/action_out_proj/time_mlp/state_proj (true=freeze)")
+    parser.add_argument("--freeze_tactile_expert", type=_str2bool, default=fz.get("tactile_expert_freeze", False),
+                        help="冻结 tactile expert 的 tac_expert_* 层 (true=freeze)")
 
     # ── Training hyperparams ─────────────────────────────────────────────────
     parser.add_argument("--batch_size",    type=int,   default=cfg.get("batch_size", 4))
@@ -730,6 +783,9 @@ def main():
         ),
     )
     parser.add_argument("--num_workers",    type=int,  default=cfg.get("num_workers", 4))
+    parser.add_argument("--prefetch_factor", type=int,  default=cfg.get("prefetch_factor", None),
+                        help="DataLoader prefetch_factor per worker (None = PyTorch default 2). "
+                             "Values of 4-8 reduce worker stall for large tactile batches.")
     parser.add_argument("--seed",           type=int,  default=cfg.get("seed", 42))
     parser.add_argument("--action_horizon", type=int,  default=cfg.get("action_horizon", 50))
     parser.add_argument("--ema",   action="store_true", default=cfg.get("ema", True))
@@ -775,7 +831,11 @@ def main():
                       f"Known: {list(TASK_INSTRUCTIONS)}")
                 continue
             if args.compute_norm_stats_only:
-                _compute_norm_stats_from_parquet(task)
+                tac_root_path = Path(getattr(args, "tactile_dataset_root",
+                                             "/data1/zjb/data_lerobot_openpi_df_tactile"))
+                ds_dir = str(tac_root_path / task) if getattr(args, "use_tactile", False) \
+                    else str(DATASET_ROOT / task)
+                _compute_norm_stats_from_parquet(task, dataset_dir=ds_dir)
             else:
                 train_singletask(args, task)
 

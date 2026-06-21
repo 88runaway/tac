@@ -1,0 +1,263 @@
+_wandb:
+    value:
+        cli_version: 0.27.2
+        e:
+            aprgtvbt58jbmtp5bwho1k10ey0c9t8g:
+                args:
+                    - --task
+                    - insert_HDMI
+                    - --gpu
+                    - 4,5,6,7
+                    - --use_tactile
+                    - "true"
+                    - --use_tactile_expert
+                    - "true"
+                    - --tactile_expert_loss_weight
+                    - "0.5"
+                    - --block_time_sampling
+                    - monotone
+                    - --mix_prob
+                    - "1.0"
+                    - --warm_start_ckpt
+                    - /data/zjb/ckpts/pi05_all_128_20k/params
+                    - --overwrite
+                codePath: policy/Pi05_openpi_DF/train_df.py
+                codePathLocal: policy/Pi05_openpi_DF/train_df.py
+                cpu_count: 76
+                cpu_count_logical: 152
+                cudaVersion: "13.2"
+                disk:
+                    /:
+                        total: "468191526912"
+                        used: "111906865152"
+                email: ian3133295032@gmail.com
+                executable: /data/zjb/openpi/.venv/bin/python
+                git:
+                    commit: a2bb053798fa4f35dd7d378439fedf29ced8b59d
+                    remote: https://github.com/88runaway/tac.git
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 8
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-db4c12d9-bceb-b6a7-4b88-219ddd5bca04
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-8a41e587-68f4-bc1a-a8ff-b5a97086982e
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-1a9f7ce1-e704-fac4-045d-8d374cdc8e09
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-5cd92b09-b569-65c3-d7a9-f2fe67119a3d
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-6da72383-e21b-5424-e997-d770c82f5a07
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-47d2dcfd-c411-81b0-27c5-168369436bc4
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-afe86adc-e76e-f2aa-1e5f-7d7835d8bcc1
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-13d870b3-729d-cb1d-aa41-e17fb3452371
+                host: lyg0311
+                memory:
+                    total: "1081801150464"
+                os: Linux-5.15.0-181-generic-x86_64-with-glibc2.35
+                program: /data/zjb/UniVTAC/policy/Pi05_openpi_DF/train_df.py
+                python: CPython 3.11.15
+                root: /data/zjb/UniVTAC
+                startedAt: "2026-06-20T09:03:23.308399Z"
+                writerId: aprgtvbt58jbmtp5bwho1k10ey0c9t8g
+        m: []
+        python_version: 3.11.15
+        t:
+            "1":
+                - 1
+                - 11
+                - 12
+                - 41
+                - 45
+                - 49
+                - 51
+            "2":
+                - 1
+                - 11
+                - 12
+                - 41
+                - 45
+                - 49
+                - 51
+            "3":
+                - 13
+                - 16
+                - 41
+                - 61
+            "4": 3.11.15
+            "5": 0.27.2
+            "6": 4.53.2
+            "12": 0.27.2
+            "13": linux-x86_64
+assets_base_dir:
+    value: /data/zjb/ckpts/pi05_df_tac_insert_HDMI/assets
+batch_size:
+    value: 128
+checkpoint_base_dir:
+    value: /data/zjb/ckpts/pi05_df_tac_insert_HDMI/checkpoints
+data:
+    value:
+        assets:
+            asset_id: univtac_all
+            assets_dir: /data/zjb/ckpts/pi05_all_128_20k/assets
+        base_config:
+            action_sequence_keys:
+                - action
+            action_space: null
+            asset_id: null
+            data_transforms:
+                inputs: []
+                outputs: []
+            datasets: []
+            default_prompt: null
+            extra_delta_timestamps: null
+            model_transforms:
+                inputs: []
+                outputs: []
+            norm_stats: null
+            prompt_from_task: true
+            repack_transforms:
+                inputs: []
+                outputs: []
+            repo_id: null
+            rlds_data_dir: null
+            root: null
+            use_quantile_norm: false
+        data_transforms: openpi.training.config.<lambda>
+        default_prompt: Insert the HDMI cable into the port.
+        extra_delta_timestamps:
+            observation.images.tactile_left:
+                - 0
+                - 0.08333333333333333
+                - 0.16666666666666666
+                - 0.25
+                - 0.3333333333333333
+                - 0.4166666666666667
+                - 0.5
+                - 0.5833333333333334
+                - 0.6666666666666666
+                - 0.75
+            observation.images.tactile_right:
+                - 0
+                - 0.08333333333333333
+                - 0.16666666666666666
+                - 0.25
+                - 0.3333333333333333
+                - 0.4166666666666667
+                - 0.5
+                - 0.5833333333333334
+                - 0.6666666666666666
+                - 0.75
+        local_root: /data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile/insert_HDMI
+        model_transforms:
+            default_prompt: null
+        repack_transforms:
+            inputs:
+                - structure:
+                    actions: action
+                    observation/image: observation.images.head
+                    observation/state: observation.state
+                    observation/tactile_left: observation.images.tactile_left
+                    observation/tactile_right: observation.images.tactile_right
+                    prompt: task
+            outputs: []
+        repo_id: univtac_df_tac/insert_HDMI
+ema_decay:
+    value: 0.99
+exp_name:
+    value: pi05_df_insert_HDMI
+freeze_filter:
+    value: Any(PathRegex(pattern=re.compile('.*img.*'), sep='/'), All(PathRegex(pattern=re.compile('.*llm.*'), sep='/'), Not(PathRegex(pattern=re.compile('.*llm.*_1.*'), sep='/'))))
+fsdp_devices:
+    value: 4
+keep_period:
+    value: 5000
+log_interval:
+    value: 50
+lr_schedule:
+    value:
+        decay_lr: 5e-06
+        decay_steps: 30000
+        peak_lr: 5e-05
+        warmup_steps: 1000
+model:
+    value:
+        action_dim: 32
+        action_expert_variant: gemma_300m
+        action_horizon: 50
+        block_time_sampling: monotone
+        discrete_state_input: true
+        dtype: bfloat16
+        max_token_len: 200
+        mix_prob: 1
+        num_blocks: 10
+        paligemma_variant: gemma_2b
+        pi05: true
+        pytorch_compile_mode: max-autotune
+        tactile_expert_loss_weight: 0.5
+        tactile_expert_num_tokens: 32
+        tactile_expert_variant: gemma_300m
+        tactile_tokens_per_finger: 16
+        use_tactile: true
+        use_tactile_expert: true
+name:
+    value: pi05_univtac_df
+num_train_steps:
+    value: 30000
+num_workers:
+    value: 4
+optimizer:
+    value:
+        b1: 0.9
+        b2: 0.95
+        clip_gradient_norm: 1
+        eps: 1e-06
+        weight_decay: 1e-10
+overwrite:
+    value: true
+policy_metadata:
+    value: null
+project_name:
+    value: univtac-pi05-df
+pytorch_training_precision:
+    value: bfloat16
+pytorch_weight_path:
+    value: null
+resume:
+    value: false
+save_interval:
+    value: 2000
+seed:
+    value: 42
+wandb_enabled:
+    value: true
+weight_loader:
+    value:
+        params_path: /data/zjb/ckpts/pi05_all_128_20k/params

@@ -58,8 +58,8 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 UNIVTAC_ROOT = SCRIPT_DIR.parent.parent
-DATA_ROOT = Path("/data1/zjb/ckpt/UniVTAC")
-DEFAULT_OUTPUT_ROOT = Path("/data1/zjb/data_lerobot_openpi_df_tactile")
+DATA_ROOT = Path("/data/zjb/data/UniVTAC")
+DEFAULT_OUTPUT_ROOT = Path("/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile")
 TASK_SETTINGS_PATH = UNIVTAC_ROOT / "policy" / "task_settings.json"
 
 # ─── Task definitions ─────────────────────────────────────────────────────────

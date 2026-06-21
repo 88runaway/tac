@@ -537,6 +537,9 @@ class TrainConfig:
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
+    # Number of batches to prefetch per worker. None means use PyTorch default (2).
+    # For large-sample datasets (e.g. with tactile images) a value of 4 reduces worker stall.
+    prefetch_factor: int | None = None
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 

@@ -38,3 +38,8 @@ block_size: 5
 #   包含 tactile.left_gsmini.rgb_marker / right_gsmini.rgb_marker。
 #   false → 走 _eval_standard（一次性推理，无触觉闭环）
 use_tactile: true
+
+# ─── Tactile expert ──────────────────────────────────────────────────────────
+# 推理时 tactile expert 与 action 同步去噪。预测的 future tactile latent
+# 不直接使用，仅通过 mutual attention 为 action 提供前瞻触觉信息。
+# 此项无需手动设置，推理时自动从 ckpt 的 model config 读取。

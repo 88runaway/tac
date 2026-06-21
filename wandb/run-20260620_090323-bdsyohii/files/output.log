@@ -1,0 +1,105 @@
+09:03:24.630 [I] Loaded norm stats from /data/zjb/ckpts/pi05_all_128_20k/assets/univtac_all       (1086732:config.py:210)
+09:03:24.705 [I] data_config: DataConfig(repo_id='univtac_df_tac/insert_HDMI', root='/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile/insert_HDMI', asset_id='univtac_all', norm_stats={'state': NormStats(mean=array([ 0.04835203,  0.25667569, -0.04679454, -2.29946661, -0.04478823,
+        2.81255746,  0.84631187,  0.00693395]), std=array([0.33116195, 0.30629835, 0.30486518, 0.2162838 , 0.5168218 ,
+       0.38355789, 0.46253175, 0.00552558]), q01=array([-8.47284376e-01, -1.20696719e+00, -1.41938560e+00, -2.81631613e+00,
+       -2.56534021e+00,  2.11921702e+00, -7.38133947e-01,  1.18519358e-03]), q99=array([ 1.60218262,  0.63452385,  0.83410519, -1.83028512,  1.88587767,
+        3.62301424,  2.75331215,  0.02670397])), 'actions': NormStats(mean=array([ 0.04942848,  0.26200801, -0.04752613, -2.29175591, -0.05062073,
+        2.82752061,  0.82109886,  0.00727163]), std=array([0.35188329, 0.31555584, 0.32276979, 0.21072829, 0.54099107,
+       0.38352245, 0.44855291, 0.00631722]), q01=array([-9.39949180e-01, -1.35236098e+00, -1.47698533e+00, -2.70193473e+00,
+       -2.57320456e+00,  2.16751090e+00, -7.90245083e-01,  1.19305276e-03]), q99=array([ 1.6809067 ,  0.60701691,  0.93352391, -1.82915487,  2.41615905,
+        3.63193003,  2.75425962,  0.03886213]))}, repack_transforms=Group(inputs=[RepackTransform(structure={'observation/image': 'observation.images.head', 'observation/state': 'observation.state', 'actions': 'action', 'prompt': 'task', 'observation/tactile_left': 'observation.images.tactile_left', 'observation/tactile_right': 'observation.images.tactile_right'})], outputs=()), data_transforms=Group(inputs=[UniVTACInputs(model_type=<ModelType.PI05: 'pi05'>)], outputs=[UniVTACOutputs()]), model_transforms=Group(inputs=[InjectDefaultPrompt(prompt='Insert the HDMI cable into the port.'), ResizeImages(height=224, width=224), TokenizePrompt(tokenizer=<openpi.models.tokenizer.PaligemmaTokenizer object at 0x7fd2cc22e590>, discrete_state_input=True), PadStatesAndActions(model_action_dim=32)], outputs=()), use_quantile_norm=True, action_sequence_keys=('action',), extra_delta_timestamps={'observation.images.tactile_left': [0.0, 0.08333333333333333, 0.16666666666666666, 0.25, 0.3333333333333333, 0.4166666666666667, 0.5, 0.5833333333333334, 0.6666666666666666, 0.75], 'observation.images.tactile_right': [0.0, 0.08333333333333333, 0.16666666666666666, 0.25, 0.3333333333333333, 0.4166666666666667, 0.5, 0.5833333333333334, 0.6666666666666666, 0.75]}, prompt_from_task=True, default_prompt='Insert the HDMI cable into the port.', rlds_data_dir=None, action_space=None, datasets=()) (1086732:data_loader.py:263)
+Resolving data files: 100%|██████████████████████████████████| 100/100 [00:00<00:00, 346636.69it/s]
+09:03:26.805 [I] local_batch_size: 128                                                            (1086732:data_loader.py:344)
+09:04:03.993 [I] Initialized data loader:
+[0].images['base_0_rgb']: (128, 224, 224, 3)@float32
+[0].images['left_wrist_0_rgb']: (128, 224, 224, 3)@float32
+[0].images['right_wrist_0_rgb']: (128, 224, 224, 3)@float32
+[0].image_masks['base_0_rgb']: (128,)@bool
+[0].image_masks['left_wrist_0_rgb']: (128,)@bool
+[0].image_masks['right_wrist_0_rgb']: (128,)@bool
+[0].state: (128, 32)@float32
+[0].tokenized_prompt: (128, 200)@int32
+[0].tokenized_prompt_mask: (128, 200)@bool
+[0].tactile['left']: (128, 10, 224, 224, 3)@float32
+[0].tactile['right']: (128, 10, 224, 224, 3)@float32
+[1]: (128, 50, 32)@float32 (1086732:train.py:227)
+[34m[1mwandb[0m: [33mWARNING[0m Data passed to `wandb.Image` should consist of values in the range [0, 255], image data will be normalized to this range, but behavior will be removed in a future version of wandb.
+[34m[1mwandb[0m: [32m[41mERROR[0m Failed to execute API request: the service process is busy and did not respond in time.
+Traceback (most recent call last):
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/normalize.py", line 28, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/internal/internal_api.py", line 726, in viewer_server_info
+    res = self.execute(query)
+          ^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/internal/internal_api.py", line 345, in execute
+    return self._service_api.execute_graphql(*args, **kwargs)  # type: ignore[return-value]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/public/service_api.py", line 144, in execute_graphql
+    response = self.send_api_request(
+               ^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/public/service_api.py", line 89, in send_api_request
+    return session.connection.api_request(request, timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/lib/service/service_connection.py", line 240, in api_request
+    raise WandbApiFailedError(
+wandb.sdk.lib.service.service_connection.WandbApiFailedError: Failed to execute API request: the service process is busy and did not respond in time.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data/zjb/UniVTAC/policy/Pi05_openpi_DF/train_df.py", line 865, in <module>
+    main()
+  File "/data/zjb/UniVTAC/policy/Pi05_openpi_DF/train_df.py", line 824, in main
+    train_singletask(args, task)
+  File "/data/zjb/UniVTAC/policy/Pi05_openpi_DF/train_df.py", line 559, in train_singletask
+    _run_openpi_train(train_config)
+  File "/data/zjb/UniVTAC/policy/Pi05_openpi_DF/train_df.py", line 171, in _run_openpi_train
+    m.main(train_config)
+  File "/data/zjb/UniVTAC/openpi/scripts/train.py", line 234, in main
+    wandb.log({"camera_views": images_to_log}, step=0)
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 329, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 387, in wrapper_fn
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 374, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 1998, in log
+    self._log(data=data, step=step, commit=commit)
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 1709, in _log
+    self._partial_history_callback(data, step, commit)
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 329, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/wandb_run.py", line 1540, in _partial_history_callback
+    self._interface.publish_partial_history(
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/interface/interface.py", line 694, in publish_partial_history
+    data = history_dict_to_json(run, data, step=user_step, ignore_copy_err=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/data_types/utils.py", line 57, in history_dict_to_json
+    payload[key] = val_to_json(
+                   ^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/data_types/utils.py", line 107, in val_to_json
+    if _server_accepts_image_filenames(run):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/data_types/image.py", line 111, in _server_accepts_image_filenames
+    max_cli_version = util._get_max_cli_version()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/util.py", line 1787, in _get_max_cli_version
+    max_cli_version = wandb.api.max_cli_version()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/internal.py", line 84, in max_cli_version
+    return self.api.max_cli_version()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/normalize.py", line 28, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/sdk/internal/internal_api.py", line 692, in max_cli_version
+    _, server_info = self.viewer_server_info()
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/zjb/openpi/.venv/lib/python3.11/site-packages/wandb/apis/normalize.py", line 37, in wrapper
+    raise CommError(message, err) from err
+wandb.errors.errors.CommError: Failed to execute API request: the service process is busy and did not respond in time.
