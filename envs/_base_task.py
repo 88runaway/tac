@@ -484,14 +484,14 @@ class BaseTask(UipcRLEnv):
     def pause(self):
         self.sim.pause()
 
-    def _update_render(self):
+    def _update_render(self, recompute_tactile: bool = True):
         self.uipc_sim.update_render_meshes()
         self.sim.render()
         
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
         self.scene.update(dt=dt)
         self._actor_manager.update(dt=dt)
-        self._tactile_manager.update(dt=dt, force_recompute=True)
+        self._tactile_manager.update(dt=dt, force_recompute=recompute_tactile)
  
         self.last_render = self.step_count
     
@@ -568,7 +568,8 @@ class BaseTask(UipcRLEnv):
 
         if render_freq or (self.mode == 'collect' and is_save and save_freq) or (is_save and video_freq) \
             or (self.mode == 'eval' and not self.in_pre_move):
-            self._update_render()
+            skip_tac = getattr(self, '_tactile_skip', False)
+            self._update_render(recompute_tactile=not skip_tac)
 
         obs = None
         if self.mode == 'collect' and is_save and save_freq:

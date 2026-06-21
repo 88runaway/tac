@@ -137,6 +137,19 @@ class Pi0DFInferenceServer:
                 f"Use config_name ending in '_df' (e.g. 'pi05_univtac_df')."
             )
 
+        # Override use_tactile from deploy args. The static registry config defaults
+        # use_tactile=False, but the checkpoint may have been trained with use_tactile=True
+        # via train_df.py --use_tactile true. Pass use_tactile through init_args so that
+        # the model is reconstructed with the correct architecture before loading weights.
+        use_tactile_override = bool(args.get("use_tactile", False))
+        if use_tactile_override and not getattr(train_config.model, "use_tactile", False):
+            import dataclasses
+            train_config = dataclasses.replace(
+                train_config,
+                model=dataclasses.replace(train_config.model, use_tactile=True),
+            )
+            print(f"[Pi0DFServer] use_tactile overridden to True from deploy args", flush=True)
+
         # Auto-detect norm stats from checkpoint assets/.
         norm_stats = None
         assets_dir = ckpt_dir / "assets"
@@ -184,9 +197,27 @@ class Pi0DFInferenceServer:
         self.num_blocks = num_blocks
         self.use_tactile = getattr(train_config.model, "use_tactile", False)
 
+        # Store action unnormalization stats for the interactive tactile path.
+        # policy.infer() applies _output_transform (Unnormalize) automatically, but
+        # the interactive path calls _jit_denoise directly and must unnormalize manually.
+        self._action_mean = None
+        self._action_std = None
+        if norm_stats is not None and "actions" in norm_stats:
+            self._action_mean = np.array(norm_stats["actions"].mean, dtype=np.float32)
+            self._action_std  = np.array(norm_stats["actions"].std,  dtype=np.float32)
+            print(f"[Pi0DFServer] action unnorm: mean={self._action_mean}, std={self._action_std}", flush=True)
+
         # Keep direct access to the raw model for interactive tactile inference.
         if self.use_tactile:
             self.model = self.policy._model  # Pi0DF nnx model
+            # JIT-compile the three hot-path methods to avoid per-step Python dispatch.
+            # Without JIT, every call traces through Python layer-by-layer (extremely slow).
+            from openpi.shared import nnx_utils
+            self._jit_prepare   = nnx_utils.module_jit(self.model.prepare_interactive_inference)
+            self._jit_encode_tac = nnx_utils.module_jit(
+                self.model.encode_tactile, static_argnames=("train",)
+            )
+            self._jit_denoise   = nnx_utils.module_jit(self.model.denoise_segment)
 
         print(
             f"[Pi0DFServer] Ready. "
@@ -230,6 +261,15 @@ class Pi0DFInferenceServer:
             self._action_queue.append(actions[i])
         return actions[0]
 
+    def _unnormalize_actions(self, actions: np.ndarray) -> np.ndarray:
+        """Undo z-score normalization on action array of shape (..., action_dim_<=8)."""
+        if self._action_mean is None:
+            return actions
+        d = actions.shape[-1]
+        mean = self._action_mean[:d]
+        std  = self._action_std[:d]
+        return actions * (std + 1e-6) + mean
+
     # ── Interactive tactile inference ─────────────────────────────────────
 
     def handle_infer_tactile_start(self, msg: dict) -> np.ndarray:
@@ -265,7 +305,7 @@ class Pi0DFInferenceServer:
             obs_dict["observation/wrist_image"] = bytes_to_arr(msg["images"]["left_wrist_0_rgb"])
 
         # Run the policy transforms to get the model-ready observation
-        transformed = self.policy._transforms.apply_input_transforms(obs_dict)
+        transformed = self.policy._input_transform(obs_dict)
         from openpi.models.model import Observation
         observation = Observation.from_dict(jax.tree.map(lambda x: jnp.array(x)[None], transformed))
 
@@ -280,11 +320,20 @@ class Pi0DFInferenceServer:
         model = self.model
         rng = jax.random.PRNGKey(0)
 
+        import time as _time
         # Prepare prefix and noise
-        noise, obs_proc, prefix_tokens, prefix_mask, kv_cache = model.prepare_interactive_inference(rng, observation)
+        _t0 = _time.perf_counter()
+        noise, obs_proc, prefix_tokens, prefix_mask, kv_cache = self._jit_prepare(rng, observation)
+        # Force GPU sync so timing is accurate (block on the noise array as a proxy)
+        noise.block_until_ready()
+        _t1 = _time.perf_counter()
+        print(f"[Pi0DF] jit_prepare: {_t1-_t0:.2f}s", flush=True)
 
         # Encode initial tactile
-        tactile_tokens = model.encode_tactile(tac_left_j, tac_right_j, train=False)
+        tactile_tokens = self._jit_encode_tac(tac_left_j, tac_right_j, train=False)
+        tactile_tokens.block_until_ready()
+        _t2 = _time.perf_counter()
+        print(f"[Pi0DF] jit_encode_tac: {_t2-_t1:.2f}s", flush=True)
 
         # Build the full blockwise time schedule
         t_schedule = model._blockwise_time_schedule(self.num_inference_steps, self.num_blocks)
@@ -300,13 +349,17 @@ class Pi0DFInferenceServer:
         # Run segment 0
         seg_start = 0
         seg_end = steps_per_block
-        x_t = model.denoise_segment(
+        _t3 = _time.perf_counter()
+        x_t = self._jit_denoise(
             noise,
             t_starts[seg_start:seg_end],
             dt_schedule[seg_start:seg_end],
             obs_proc, prefix_tokens, prefix_mask, kv_cache,
             tactile_tokens,
         )
+        x_t.block_until_ready()
+        _t4 = _time.perf_counter()
+        print(f"[Pi0DF] jit_denoise block0: {_t4-_t3:.2f}s (total start: {_t4-_t0:.2f}s)", flush=True)
 
         # Save state for continue calls
         self._interactive_state = {
@@ -321,9 +374,11 @@ class Pi0DFInferenceServer:
             "next_block_idx": 1,
         }
 
-        # Extract block 0 actions
+        # Extract block 0 actions and unnormalize from model's z-score space to real joint space
         bs = self.block_size
-        block_actions = np.asarray(x_t[0, :bs, :8]).astype(np.float32)
+        block_actions = self._unnormalize_actions(
+            np.asarray(x_t[0, :bs, :8]).astype(np.float32)
+        )
         return block_actions, 0
 
     def handle_infer_tactile_continue(self, msg: dict):
@@ -334,6 +389,7 @@ class Pi0DFInferenceServer:
                             "tactile_left": <npy>, "tactile_right": <npy>}
           Server → Client: {"block_actions": <npy>, "block_idx": k, "done": bool}
         """
+        import time as _time
         import jax.numpy as jnp
 
         st = self._interactive_state
@@ -341,7 +397,6 @@ class Pi0DFInferenceServer:
             raise RuntimeError("No interactive session — call infer_tactile_start first.")
 
         block_idx = st["next_block_idx"]
-        model = self.model
 
         # Encode new tactile
         tac_left = bytes_to_arr(msg["tactile_left"]).astype(np.float32)
@@ -352,25 +407,33 @@ class Pi0DFInferenceServer:
             tac_right = tac_right / 255.0
         tac_left_j = jnp.array(tac_left)[None]
         tac_right_j = jnp.array(tac_right)[None]
-        tactile_tokens = model.encode_tactile(tac_left_j, tac_right_j, train=False)
+        _t0 = _time.perf_counter()
+        tactile_tokens = self._jit_encode_tac(tac_left_j, tac_right_j, train=False)
+        tactile_tokens.block_until_ready()
+        _t1 = _time.perf_counter()
 
         # Run next segment
         spb = st["steps_per_block"]
         seg_start = block_idx * spb
         seg_end = min((block_idx + 1) * spb, self.num_inference_steps)
 
-        x_t = model.denoise_segment(
+        x_t = self._jit_denoise(
             st["x_t"],
             st["t_starts"][seg_start:seg_end],
             st["dt_schedule"][seg_start:seg_end],
             st["obs"], st["prefix_tokens"], st["prefix_mask"], st["kv_cache"],
             tactile_tokens,
         )
+        x_t.block_until_ready()
+        _t2 = _time.perf_counter()
+        print(f"[Pi0DF] block{block_idx} encode_tac={_t1-_t0:.2f}s denoise={_t2-_t1:.2f}s total={_t2-_t0:.2f}s", flush=True)
         st["x_t"] = x_t
 
-        # Extract this block's actions
+        # Extract this block's actions and unnormalize from model's z-score space to real joint space
         bs = self.block_size
-        block_actions = np.asarray(x_t[0, block_idx * bs:(block_idx + 1) * bs, :8]).astype(np.float32)
+        block_actions = self._unnormalize_actions(
+            np.asarray(x_t[0, block_idx * bs:(block_idx + 1) * bs, :8]).astype(np.float32)
+        )
         done = (block_idx >= self.num_blocks - 1)
 
         st["next_block_idx"] = block_idx + 1
