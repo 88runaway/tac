@@ -49,6 +49,9 @@ tactile_expert_variant: "gemma_300m"
 tactile_expert_num_tokens: 32
 # 触觉预测 velocity loss 的权重（相对于 action loss）
 tactile_expert_loss_weight: 0.5
+# tactile expert 内部是否使用 local attention（节省显存，牺牲少量全局建模能力）
+# 通常保持 false；显存极度紧张时才设 true
+tac_expert_local_attn: false
 
 # ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
 # true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。

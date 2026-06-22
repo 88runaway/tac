@@ -68,3 +68,4 @@ openpi/checkpoints/
 outputs_openpi_df/
 rnrdp/
 T-Rex/
+wandb/

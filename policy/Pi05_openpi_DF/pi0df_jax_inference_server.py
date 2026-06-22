@@ -318,7 +318,9 @@ class Pi0DFInferenceServer:
         tac_right_j = jnp.array(tac_right)[None]  # (1, H, W, 3)
 
         model = self.model
-        rng = jax.random.PRNGKey(0)
+        # Advance the policy's own RNG so every episode gets different initial noise.
+        # Hardcoding PRNGKey(0) would give identical noise every episode → zero diversity.
+        self.policy._rng, rng = jax.random.split(self.policy._rng)
 
         import time as _time
         # Prepare prefix and noise

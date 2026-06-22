@@ -4,10 +4,16 @@
 # 所有默认参数从 config/eval_df.yaml 读取，CLI 参数按位置覆盖。
 #
 # Usage:
-#   bash policy/Pi05_openpi_DF/sh/eval.sh [task_name] [gpu_id] [save_video] [seed] [total_num]
+#   bash policy/Pi05_openpi_DF/sh/eval.sh [--config <cfg>] [task_name] [gpu_id] [save_video] [seed] [total_num]
+#
+# --config 可以是：
+#   - 文件名（不含路径）：在 config/ 目录下查找，如 eval_token.yaml
+#   - 相对/绝对路径：直接使用
 #
 # Examples:
 #   bash policy/Pi05_openpi_DF/sh/eval.sh insert_HDMI 1
+#   bash policy/Pi05_openpi_DF/sh/eval.sh --config eval_token.yaml
+#   bash policy/Pi05_openpi_DF/sh/eval.sh --config eval_token.yaml insert_HDMI 1
 #   bash policy/Pi05_openpi_DF/sh/eval.sh insert_HDMI 1,2   # 2卡并行，seed 自动拆分
 #   CKPT_DIR=/data1/zjb/UniVTAC/outputs_openpi_df/.../5000 \
 #     bash policy/Pi05_openpi_DF/sh/eval.sh insert_HDMI 1
@@ -18,8 +24,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLICY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-CONFIG_FILE="${POLICY_DIR}/config/eval_df.yaml"
 BASE_DEPLOY="${POLICY_DIR}/config/deploy_df.yml"
+
+# ─── 解析 --config 选项（放在位置参数之前）────────────────────────────────────
+CONFIG_FILE="${POLICY_DIR}/config/eval_df.yaml"   # 默认配置
+if [ "${1:-}" = "--config" ]; then
+    cfg_arg="${2:?'--config 需要一个文件名或路径'}"
+    # 如果只给了文件名（无目录分隔符），自动在 config/ 目录下查找
+    if [[ "${cfg_arg}" != */* ]]; then
+        CONFIG_FILE="${POLICY_DIR}/config/${cfg_arg}"
+    else
+        CONFIG_FILE="${cfg_arg}"
+    fi
+    shift 2   # 消费 --config <value>，位置参数向前移
+fi
+
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "错误：找不到配置文件 ${CONFIG_FILE}" >&2
+    exit 1
+fi
 
 # ─── 解析 yaml helper ─────────────────────────────────────────────────────────
 _yaml_get() {
@@ -54,6 +77,8 @@ block_size=$(_yaml_get block_size)
 decimation=$(_yaml_get decimation)
 save_image=$(_yaml_get save_image)
 expert_check=$(_yaml_get expert_check)
+use_tactile=$(_yaml_get use_tactile)
+use_tactile_expert=$(_yaml_get use_tactile_expert)
 
 # CLI 第 4 位传入 seed → 单 seed 评估
 if [ -n "${4:-}" ]; then
@@ -100,6 +125,8 @@ echo "  num_inference_steps:  ${num_inference_steps}"
 echo "  infer_time_schedule:  ${infer_time_schedule}"
 echo "  block_size:           ${block_size:-null}"
 echo "  decimation:           ${decimation}"
+echo "  use_tactile:          ${use_tactile}"
+echo "  use_tactile_expert:   ${use_tactile_expert}"
 echo "  Save video:    ${save_video}"
 echo "  Expert check:  ${expert_check}"
 echo "========================================="
@@ -128,6 +155,15 @@ for key, val in [
             cfg[key] = int(v)
         except ValueError:
             cfg[key] = v
+
+# 触觉模式：从 eval yaml 覆盖（空值保持 deploy_df.yml 的默认值）
+for key, val in [
+    ('use_tactile',        '${use_tactile}'),
+    ('use_tactile_expert', '${use_tactile_expert}'),
+]:
+    v = val.strip().lower()
+    if v in ('true', 'false'):
+        cfg[key] = (v == 'true')
 
 with open('${TMP_DEPLOY}', 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
