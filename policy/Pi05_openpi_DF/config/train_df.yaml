@@ -48,7 +48,7 @@ tactile_expert_variant: "gemma_300m"
 # 预测 token 数（= num_tactile_tokens = tactile_tokens_per_finger * 2）
 tactile_expert_num_tokens: 32
 # 触觉预测 velocity loss 的权重（相对于 action loss）
-tactile_expert_loss_weight: 0.5
+tactile_expert_loss_weight: 1.0
 
 # ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
 # true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。
