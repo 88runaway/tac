@@ -1,0 +1,1 @@
+source /data/zjb/openpi/.venv/bin/activate

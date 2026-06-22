@@ -255,8 +255,8 @@ class Pi0DF(_model.BaseModel):
             # Concatenate along channel dim: (b, h, w, 3) ‖ (b, h, w, 3) → (b, h, w, 6)
             left_inp  = jnp.concatenate([tactile_left,  prev_tactile_left],  axis=-1)
             right_inp = jnp.concatenate([tactile_right, prev_tactile_right], axis=-1)
-            left_tok  = self.tactile_encoder(left_inp)   # (b, 16, emb)
-            right_tok = self.tactile_encoder(right_inp)  # (b, 16, emb)
+            left_tok  = self.tactile_encoder(left_inp,  finger_idx=0)  # (b, 16, emb)
+            right_tok = self.tactile_encoder(right_inp, finger_idx=1)  # (b, 16, emb)
         else:  # "resnet"
             left_tok  = self.tactile_encoder(tactile_left,  train=train)   # (b, 16, emb)
             right_tok = self.tactile_encoder(tactile_right, train=train)   # (b, 16, emb)

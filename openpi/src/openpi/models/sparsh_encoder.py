@@ -279,97 +279,38 @@ def _load_vit_weights(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Attention Pooling  (197 ViT tokens → num_queries spatial tokens)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class AttentionPool(nnx.Module):
-    """Perceiver-style cross-attention pooling.
-
-    Compresses a long sequence of encoder tokens into a fixed number of
-    query-driven output tokens via multi-head cross-attention:
-
-        Q  =  learned_queries  (1, num_queries, D)
-        K  =  k_proj(LayerNorm(encoder_out))
-        V  =  v_proj(LayerNorm(encoder_out))
-        out = MHA(Q, K, V) + Q   [residual stabilises fine-tuning]
-    """
-
-    def __init__(
-        self,
-        embed_dim:   int,
-        num_queries: int,
-        num_heads:   int,
-        *,
-        rngs: nnx.Rngs,
-    ):
-        assert embed_dim % num_heads == 0
-        self.num_queries = num_queries
-        self.num_heads   = num_heads
-        self.head_dim    = embed_dim // num_heads
-        self.scale       = self.head_dim ** -0.5
-
-        self.queries  = nnx.Param(
-            jax.random.normal(rngs.params(), (1, num_queries, embed_dim)) * 0.02
-        )
-        self.q_proj   = nnx.Linear(embed_dim, embed_dim, use_bias=True, rngs=rngs)
-        self.k_proj   = nnx.Linear(embed_dim, embed_dim, use_bias=True, rngs=rngs)
-        self.v_proj   = nnx.Linear(embed_dim, embed_dim, use_bias=True, rngs=rngs)
-        self.out_proj = nnx.Linear(embed_dim, embed_dim, use_bias=True, rngs=rngs)
-        self.norm_q   = nnx.LayerNorm(embed_dim, epsilon=LN_EPS, rngs=rngs)
-        self.norm_kv  = nnx.LayerNorm(embed_dim, epsilon=LN_EPS, rngs=rngs)
-
-    def __call__(self, encoder_out: jax.Array) -> jax.Array:
-        """
-        Args:
-            encoder_out: (B, S, D) — ViT output tokens (S = 197).
-        Returns:
-            (B, num_queries, D) pooled tokens.
-        """
-        B, S, D = encoder_out.shape
-        Nq = self.num_queries
-        H, Dh = self.num_heads, self.head_dim
-
-        queries = jnp.broadcast_to(self.queries.value, (B, Nq, D))   # (B, Nq, D)
-
-        q  = self.q_proj(self.norm_q(queries))    # (B, Nq, D)
-        kv = self.norm_kv(encoder_out)
-        k  = self.k_proj(kv)                      # (B, S, D)
-        v  = self.v_proj(kv)                      # (B, S, D)
-
-        def _split(t: jax.Array, N: int) -> jax.Array:
-            return t.reshape(B, N, H, Dh).transpose(0, 2, 1, 3)   # (B, H, N, Dh)
-
-        q, k, v = _split(q, Nq), _split(k, S), _split(v, S)
-
-        attn = (q @ jnp.swapaxes(k, -2, -1)) * self.scale   # (B, H, Nq, S)
-        attn = jax.nn.softmax(attn, axis=-1)
-
-        out = (attn @ v).transpose(0, 2, 1, 3).reshape(B, Nq, D)  # (B, Nq, D)
-        out = self.out_proj(out)
-        return out + queries   # residual
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Full encoder: ViT backbone + AttentionPool + Linear proj
+# Full encoder: ViT backbone + bilinear spatial pool + position encodings
 # Drop-in replacement for TactileResNetEncoder
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SparshTactileEncoder(nnx.Module):
-    """Sparsh DINO ViT-Small + Attention Pooling tactile encoder.
+    """Sparsh DINO ViT-Small + bilinear spatial pooling + position encodings.
 
-    Drop-in replacement for ``TactileResNetEncoder`` — same input/output
-    contract, but richer features from a pretrained ViT backbone.
+    Pipeline (per finger):
 
-    Input:  (B, H, W, 6)  — current frame (ch 0-2) ‖ prev frame (ch 3-5)
-    Output: (B, num_tokens, output_dim)   default num_tokens=16 (4×4 grid)
+        (B, H, W, 6)  ──►  SparshViTSmall  ──►  (B, 197, 384)
+                           drop register token  ►  (B, 196, 384)
+                           reshape              ►  (B, 14, 14, 384)
+                           bilinear 4×4         ►  (B,  4,  4, 384)
+                           flatten              ►  (B, 16, 384)
+                           Linear               ►  (B, 16, output_dim)
+                         + spatial_emb[0:16]      # learnable 4×4 grid position (zero-init)
+                         + finger_emb[finger_idx] # learnable finger identity   (zero-init)
 
-    Architecture:
-        SparshViTSmall  →  (B, 197, 384)
-        AttentionPool   →  (B, 16,  384)
-        Linear          →  (B, 16,  output_dim)
+    Why bilinear pool instead of attention pool:
+      - Gemma action expert already provides 18 layers of cross-token interaction;
+        adding another cross-attention head in the encoder is redundant.
+      - Each of the 16 output tokens directly corresponds to a ~56×56 px region
+        of the tactile image (3–4 marker points), matching the physical 4×4 grid.
+      - Zero new parameters for pooling; only Linear(384→D) needs training.
 
-    The ViT backbone is loaded from pretrained weights; AttentionPool and
-    Linear projection are randomly initialised (trained from scratch on robot data).
+    Why position encodings are necessary:
+      - Left and right fingers share the same encoder weights; without finger_emb
+        the action expert cannot distinguish identical-looking tokens from both hands.
+      - spatial_emb explicitly encodes the 4×4 grid position inside the gemma suffix
+        sequence, complementing the 1-D RoPE which only sees sequence order.
+      - Both are zero-initialised so training begins from the pretrained ViT features
+        without any perturbation.
 
     Usage:
         encoder = SparshTactileEncoder.from_pretrained(
@@ -377,34 +318,85 @@ class SparshTactileEncoder(nnx.Module):
             output_dim=1024,
             rngs=nnx.Rngs(0),
         )
-        tokens = encoder(x)   # x: (B, 224, 224, 6) → (B, 16, 1024)
+        left_tokens  = encoder(left_pair,  finger_idx=0)  # (B, 16, 1024)
+        right_tokens = encoder(right_pair, finger_idx=1)  # (B, 16, 1024)
     """
+
+    VIT_PATCH_GRID = 14   # ViT-Small/16 on 224×224 → 14×14 patch grid
 
     def __init__(
         self,
         output_dim:  int,
         num_tokens:  int = 16,
-        pool_heads:  int = 6,
         *,
         rngs: nnx.Rngs,
     ):
+        assert int(num_tokens ** 0.5) ** 2 == num_tokens, (
+            f"num_tokens must be a perfect square (e.g. 16); got {num_tokens}"
+        )
         self.num_tokens = num_tokens
         self.output_dim = output_dim
+        self.grid = int(num_tokens ** 0.5)   # 4
 
+        # ViT backbone — pretrained weights loaded via from_pretrained()
         self.backbone = SparshViTSmall(rngs=rngs)
-        self.pool     = AttentionPool(EMBED_DIM, num_tokens, pool_heads, rngs=rngs)
-        self.proj     = nnx.Linear(EMBED_DIM, output_dim, use_bias=True, rngs=rngs)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
-        """
+        # Linear projection:  EMBED_DIM → output_dim
+        self.proj = nnx.Linear(EMBED_DIM, output_dim, use_bias=True, rngs=rngs)
+
+        # Spatial position embedding: one vector per 4×4 grid cell.
+        # Shared between left and right (encodes "where on the sensor").
+        # Zero-init: no initial bias; gradient drives differentiation.
+        self.spatial_emb = nnx.Param(jnp.zeros((num_tokens, output_dim)))
+
+        # Finger identity embedding: left=0, right=1.
+        # Broadcast to all 16 tokens of that finger.
+        # Zero-init: safe starting point, learned from task data.
+        self.finger_emb = nnx.Param(jnp.zeros((2, output_dim)))
+
+    def __call__(self, x: jax.Array, finger_idx: int = 0) -> jax.Array:
+        """Encode a single finger's tactile image pair.
+
         Args:
-            x: (B, H, W, 6) float32 in [0, 1].
+            x:          (B, H, W, 6) float32 in [0, 1].
+                        Channel layout: current_frame(ch 0-2) ‖ prev_frame(ch 3-5).
+            finger_idx: 0 = left finger, 1 = right finger.
+
         Returns:
             (B, num_tokens, output_dim) token embeddings.
         """
-        tokens = self.backbone(x)    # (B, 197, 384)
-        tokens = self.pool(tokens)   # (B, num_tokens, 384)
-        return self.proj(tokens)     # (B, num_tokens, output_dim)
+        B    = x.shape[0]
+        G    = self.grid                                 # 4
+        P    = self.VIT_PATCH_GRID                       # 14
+
+        # ── ViT backbone ──────────────────────────────────────────────────────
+        vit_out = self.backbone(x)                       # (B, 197, 384)
+
+        # Drop register token; keep the 196 patch tokens
+        patches = vit_out[:, 1:, :]                      # (B, 196, 384)
+
+        # ── Bilinear spatial pool: 14×14 → 4×4 ──────────────────────────────
+        patches = patches.reshape(B, P, P, EMBED_DIM)    # (B, 14, 14, 384)
+        patches = jax.image.resize(
+            patches,
+            shape=(B, G, G, EMBED_DIM),
+            method="linear",
+        )                                                # (B, 4, 4, 384)
+        patches = patches.reshape(B, self.num_tokens, EMBED_DIM)  # (B, 16, 384)
+
+        # ── Linear projection ────────────────────────────────────────────────
+        tokens = self.proj(patches)                      # (B, 16, output_dim)
+
+        # ── Spatial position encoding (4×4 grid, row-major) ─────────────────
+        # spatial_emb[i] encodes "token i is at grid position (i//4, i%4)"
+        tokens = tokens + self.spatial_emb.value         # (16, D) broadcast over B
+
+        # ── Finger identity encoding ─────────────────────────────────────────
+        # finger_emb[0] = left, finger_emb[1] = right
+        # Scalar shift broadcast over all 16 tokens of this finger
+        tokens = tokens + self.finger_emb.value[finger_idx]  # (D,) broadcast
+
+        return tokens                                    # (B, 16, output_dim)
 
     @classmethod
     def from_pretrained(
@@ -412,24 +404,26 @@ class SparshTactileEncoder(nnx.Module):
         npz_path:   str | Path,
         output_dim: int,
         num_tokens: int = 16,
-        pool_heads: int = 6,
         *,
         rngs:  nnx.Rngs,
         dtype: str = "float32",
     ) -> "SparshTactileEncoder":
         """Create encoder with pretrained ViT backbone.
 
-        AttentionPool and proj are randomly initialised (need training).
+        ``proj``, ``spatial_emb``, and ``finger_emb`` are zero / randomly
+        initialised and must be trained on robot data.
 
         Args:
-            npz_path:   Path to .npz from convert_sparsh_weights.py.
-            output_dim: Action-expert feature width (e.g. 1024).
-            num_tokens: Spatial tokens per finger (default 16).
-            pool_heads: Attention heads in pooling layer (default 6).
+            npz_path:   Path to .npz produced by convert_sparsh_weights.py.
+            output_dim: Action-expert feature width (e.g. 1024 for gemma_300m).
+            num_tokens: Spatial tokens per finger (default 16 = 4×4 grid).
             rngs:       Flax RNG state.
             dtype:      "float32" or "bfloat16".
         """
-        encoder = cls(output_dim, num_tokens, pool_heads, rngs=rngs)
+        encoder = cls(output_dim, num_tokens, rngs=rngs)
         _load_vit_weights(encoder.backbone, npz_path, dtype=dtype)
-        logger.info("[SparshTactileEncoder] backbone loaded; pool+proj randomly init.")
+        logger.info(
+            "[SparshTactileEncoder] backbone loaded; "
+            "proj + spatial_emb + finger_emb randomly / zero-initialised."
+        )
         return encoder

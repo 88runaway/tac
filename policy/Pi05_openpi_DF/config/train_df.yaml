@@ -41,7 +41,7 @@ tactile_tokens_per_finger: 16
 #               pool+proj 随机初始化需从头训练。
 #               需要先运行:
 #                 python policy/Pi05_openpi_DF/convert_sparsh_weights.py convert
-tactile_encoder_type: "resnet"
+tactile_encoder_type: "sparsh"
 
 # sparsh_npz_path: Sparsh 预训练权重路径（仅 tactile_encoder_type=="sparsh" 时使用）
 sparsh_npz_path: "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
@@ -59,7 +59,7 @@ tactile_dataset_root: "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"
 # 的未来触觉 latent。两个 expert 互相 attend，action 从中获得前瞻触觉信息，
 # 同时触觉预测提供 dense 辅助监督信号增强触觉/动作表征。
 # 需要 use_tactile=true 作为前置条件。
-use_tactile_expert: true
+use_tactile_expert: false
 # Tactile expert 的 Transformer 架构（独立参数，与 action expert 同深度）
 # gemma_300m: width=1024, depth=18, ~311M params（与 action expert 对称）
 tactile_expert_variant: "gemma_300m"
@@ -84,9 +84,9 @@ freeze:
   sparsh_freeze_backbone: false  # Sparsh ViT backbone（pool+proj 始终可训）
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
-batch_size: 128      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
-steps: 30000
-lr: 5e-5
+batch_size: 256      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+steps: 15000
+lr: 8e-5
 warmup_steps: 1000
 save_freq: 2000    # 每隔多少步保存一次 checkpoint
 log_freq: 50
@@ -112,12 +112,12 @@ keep_period: 5000
 fsdp_devices: 4
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
-output_dir: "/data/zjb/ckpts/pi05_df_tac_insert_HDMI"
+output_dir: "/data/zjb/ckpts/pi05_df_token_lift_can"
 
 # ─── WandB ────────────────────────────────────────────────────────────────────
 # 仅记录训练损失等标量，不上传模型参数或 artifact
-wandb: false
-wandb_project: "univtac-pi05-df"
+wandb: true
+wandb_project: "univtac-pi05-df-token-lift-can"
 
 # ─── AdamW Optimizer ─────────────────────────────────────────────────────────
 # optimizer:
