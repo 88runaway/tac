@@ -751,8 +751,19 @@ def main():
                         default=cfg.get("tactile_tokens_per_finger", 16),
                         help="每个手指触觉图编码的 token 数（默认 16，左右共 32）")
     parser.add_argument("--tactile_dataset_root", type=str,
-                        default=cfg.get("tactile_dataset_root", "/data1/zjb/data_lerobot_openpi_df_tactile"),
+                        default=cfg.get("tactile_dataset_root", "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"),
                         help="触觉数据集根路径")
+    parser.add_argument("--tactile_encoder_type", type=str,
+                        default=cfg.get("tactile_encoder_type", "resnet"),
+                        choices=["resnet", "sparsh"],
+                        help="触觉编码器后端: resnet=ResNet-18单帧; sparsh=Sparsh DINO ViT双帧")
+    parser.add_argument("--sparsh_npz_path", type=str,
+                        default=cfg.get("sparsh_npz_path",
+                                        "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"),
+                        help="Sparsh 预训练权重路径（仅 tactile_encoder_type==sparsh 时使用）")
+    parser.add_argument("--sparsh_freeze_backbone", type=_str2bool,
+                        default=cfg.get("sparsh_freeze_backbone", False),
+                        help="冻结 Sparsh ViT backbone（proj+spatial_emb+finger_emb 始终可训）")
 
     # ── Tactile expert (future tactile prediction) ────────────────────────
     parser.add_argument("--use_tactile_expert", type=_str2bool,

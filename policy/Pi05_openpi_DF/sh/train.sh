@@ -19,6 +19,12 @@ python policy/Pi05_openpi_DF/train_df.py \
 # 1. 数据转换（带触觉）
 python policy/Pi05_openpi_DF/convert_df_tactile.py --task lift_can
 
+# 2. 训练（仅启用触觉 condition，Sparsh DINO 编码器，不使用 tactile expert）
+python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 4,5,6,7 \
+    --use_tactile true --block_time_sampling monotone --mix_prob 1.0 \
+    --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
+
+
 
 # 2. 训练（仅启用触觉 condition）
 python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 3,4,5,6 \

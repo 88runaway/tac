@@ -37,8 +37,8 @@ tactile_tokens_per_finger: 16
 # tactile_encoder_type: 选择触觉编码器后端
 #   "resnet"  — ResNet-18，从零训练，单帧 3 通道输入（原始默认，无需额外权重）
 #   "sparsh"  — Sparsh DINO ViT-Small，双帧 6 通道（当前帧‖上一 block 边界帧），
-#               AttentionPool 压缩 197→16 token，ViT backbone 从预训练权重初始化，
-#               pool+proj 随机初始化需从头训练。
+#               双线性空间池化 14×14→4×4=16 token，ViT backbone 从预训练权重初始化，
+#               proj + spatial_emb(16×D) + finger_emb(2×D) 随机/零初始化需从头训练。
 #               需要先运行:
 #                 python policy/Pi05_openpi_DF/convert_sparsh_weights.py convert
 tactile_encoder_type: "sparsh"
