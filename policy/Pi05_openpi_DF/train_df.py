@@ -211,6 +211,10 @@ def _build_freeze_filter(args):
         # Freeze both the projection layers and the third expert's gemma params
         parts.append(nnx_utils.PathRegex(".*tac_expert.*"))
         parts.append(nnx_utils.PathRegex(".*_2.*"))
+    if getattr(args, "sparsh_freeze_backbone", False):
+        # Freeze Sparsh ViT backbone; AttentionPool + proj remain trainable.
+        # NNX param path: tactile_encoder/backbone/<block_i>/...
+        parts.append(nnx_utils.PathRegex(".*tactile_encoder/backbone/.*"))
     if not parts:
         return nnx.Nothing
     return nnx.Any(*parts)
@@ -289,6 +293,10 @@ def _make_model_config(args, num_blocks: int):
         block_time_sampling=args.block_time_sampling,
         use_tactile=getattr(args, "use_tactile", False),
         tactile_tokens_per_finger=getattr(args, "tactile_tokens_per_finger", 16),
+        tactile_encoder_type=getattr(args, "tactile_encoder_type", "resnet"),
+        sparsh_npz_path=getattr(args, "sparsh_npz_path",
+                                "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"),
+        sparsh_freeze_backbone=getattr(args, "sparsh_freeze_backbone", False),
         use_tactile_expert=getattr(args, "use_tactile_expert", False),
         tactile_expert_variant=getattr(args, "tactile_expert_variant", "gemma_300m"),
         tactile_expert_num_tokens=getattr(args, "tactile_expert_num_tokens", 32),
@@ -465,8 +473,14 @@ def train_singletask(args, task_name: str):
                 _fps = json.load(_f).get("fps", BASE_FPS)
         else:
             _fps = BASE_FPS
+        # Each entry loads num_blocks tactile frames at block-boundary timestamps:
+        #   t[b] = b * block_size / fps  (b = 0 … num_blocks-1)
+        # _select_tactile_for_training picks frame c (current) and c-1 (prev),
+        # giving a temporal stride of block_size/fps per adjacent frame pair.
+        # With block_size=5, fps=60: stride ≈ 83ms — matches Sparsh DINO's ~80ms
+        # pre-training stride.  With block_size=10: stride ≈ 167ms (out-of-dist.).
         extra_dt = {
-            "observation.images.tactile_left": [b * args.block_size / _fps for b in range(num_blocks)],
+            "observation.images.tactile_left":  [b * args.block_size / _fps for b in range(num_blocks)],
             "observation.images.tactile_right": [b * args.block_size / _fps for b in range(num_blocks)],
         }
 

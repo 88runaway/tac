@@ -47,6 +47,7 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 from openpi.models import tactile_encoder as _tactile_enc
+from openpi.models import sparsh_encoder as _sparsh_enc
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -148,12 +149,26 @@ class Pi0DF(_model.BaseModel):
         # ── Tactile encoder (optional) ────────────────────────────────────────────
         self.use_tactile = config.use_tactile
         self.tactile_tokens_per_finger = config.tactile_tokens_per_finger
+        self.tactile_encoder_type = config.tactile_encoder_type
         if self.use_tactile:
-            self.tactile_encoder = _tactile_enc.TactileResNetEncoder(
-                output_dim=action_expert_config.width,
-                num_tokens=self.tactile_tokens_per_finger,
-                rngs=rngs,
-            )
+            if config.tactile_encoder_type == "sparsh":
+                self.tactile_encoder = _sparsh_enc.SparshTactileEncoder.from_pretrained(
+                    npz_path=config.sparsh_npz_path,
+                    output_dim=action_expert_config.width,
+                    num_tokens=self.tactile_tokens_per_finger,
+                    rngs=rngs,
+                )
+                if config.sparsh_freeze_backbone:
+                    # Backbone freezing is applied externally via the training
+                    # freeze_filter (see train_df._build_freeze_filter).
+                    logger.info("Pi0DF: sparsh_freeze_backbone=True — backbone will "
+                                "be frozen by the training freeze_filter.")
+            else:  # "resnet" (default)
+                self.tactile_encoder = _tactile_enc.TactileResNetEncoder(
+                    output_dim=action_expert_config.width,
+                    num_tokens=self.tactile_tokens_per_finger,
+                    rngs=rngs,
+                )
             self.num_tactile_tokens = self.tactile_tokens_per_finger * 2  # left + right
 
         # ── Tactile expert projections (independent Transformer via 3rd expert) ───
@@ -175,7 +190,11 @@ class Pi0DF(_model.BaseModel):
         logger.info(
             f"Pi0DF: num_blocks={self.num_blocks}, block_size={self.block_size}, "
             f"mix_prob={self.mix_prob}, block_time_sampling={self.block_time_sampling}, "
-            f"use_tactile={self.use_tactile}, use_tactile_expert={self.use_tactile_expert}"
+            f"use_tactile={self.use_tactile}"
+            + (f" [{config.tactile_encoder_type}]" if self.use_tactile else "")
+            + (f", freeze_backbone={config.sparsh_freeze_backbone}"
+               if self.use_tactile and config.tactile_encoder_type == "sparsh" else "")
+            + f", use_tactile_expert={self.use_tactile_expert}"
             + (f", tactile_expert_variant={config.tactile_expert_variant}" if self.use_tactile_expert else "")
         )
 
@@ -211,15 +230,37 @@ class Pi0DF(_model.BaseModel):
 
     def encode_tactile(
         self,
-        tactile_left: at.Float[at.Array, "b h w 3"],
+        tactile_left:  at.Float[at.Array, "b h w 3"],
         tactile_right: at.Float[at.Array, "b h w 3"],
+        prev_tactile_left:  at.Float[at.Array, "b h w 3"] | None = None,
+        prev_tactile_right: at.Float[at.Array, "b h w 3"] | None = None,
         *,
         train: bool = False,
     ) -> at.Float[at.Array, "b nt emb"]:
-        """Encode left + right tactile images into ``num_tactile_tokens`` tokens."""
-        left_tok = self.tactile_encoder(tactile_left, train=train)    # (b, 16, emb)
-        right_tok = self.tactile_encoder(tactile_right, train=train)  # (b, 16, emb)
-        return jnp.concatenate([left_tok, right_tok], axis=1)         # (b, 32, emb)
+        """Encode left + right tactile images into ``num_tactile_tokens`` tokens.
+
+        For the "sparsh" encoder the current and previous frames are concatenated
+        along the channel dimension to form a 6-channel input (current‖prev).
+        When ``prev_*`` is None (e.g. first block) the current frame is used as
+        the previous frame, resulting in a zero-difference signal.
+
+        For the "resnet" encoder the previous frames are ignored.
+        """
+        if self.tactile_encoder_type == "sparsh":
+            # Fall back to current frame when no previous frame is available
+            if prev_tactile_left is None:
+                prev_tactile_left = tactile_left
+            if prev_tactile_right is None:
+                prev_tactile_right = tactile_right
+            # Concatenate along channel dim: (b, h, w, 3) ‖ (b, h, w, 3) → (b, h, w, 6)
+            left_inp  = jnp.concatenate([tactile_left,  prev_tactile_left],  axis=-1)
+            right_inp = jnp.concatenate([tactile_right, prev_tactile_right], axis=-1)
+            left_tok  = self.tactile_encoder(left_inp)   # (b, 16, emb)
+            right_tok = self.tactile_encoder(right_inp)  # (b, 16, emb)
+        else:  # "resnet"
+            left_tok  = self.tactile_encoder(tactile_left,  train=train)   # (b, 16, emb)
+            right_tok = self.tactile_encoder(tactile_right, train=train)   # (b, 16, emb)
+        return jnp.concatenate([left_tok, right_tok], axis=1)              # (b, 32, emb)
 
     @at.typecheck
     def embed_suffix(
@@ -386,22 +427,42 @@ class Pi0DF(_model.BaseModel):
             c = jnp.zeros(b, dtype=jnp.int32)
 
         idx = jnp.arange(b)
-        sel_left = tac_left[idx, c]    # (b, H, W, 3)
-        sel_right = tac_right[idx, c]  # (b, H, W, 3)
+        sel_left  = tac_left[idx, c]    # (b, H, W, 3)  current frame
+        sel_right = tac_right[idx, c]   # (b, H, W, 3)
+
+        # For Sparsh: also select the "previous block" frame (c-1, clamped to 0).
+        # At block 0, prev == current → zero temporal difference (a safe neutral signal).
+        if self.tactile_encoder_type == "sparsh":
+            prev_c     = jnp.clip(c - 1, 0, self.num_blocks - 1)
+            prev_left  = tac_left[idx, prev_c]    # (b, H, W, 3)
+            prev_right = tac_right[idx, prev_c]   # (b, H, W, 3)
+        else:
+            prev_left = prev_right = None
 
         if self.use_tactile_expert:
-            # Batch current + future into a single ResNet forward to halve encoder cost:
-            # instead of 4 separate (b, H, W, 3) passes, run 2 passes each on (2b, H, W, 3).
-            c_next = jnp.clip(c + 1, 0, self.num_blocks - 1)
-            fut_left = tac_left[idx, c_next]    # (b, H, W, 3)
-            fut_right = tac_right[idx, c_next]  # (b, H, W, 3)
-            all_left = jnp.concatenate([sel_left, fut_left], axis=0)    # (2b, H, W, 3)
-            all_right = jnp.concatenate([sel_right, fut_right], axis=0) # (2b, H, W, 3)
-            all_tokens = self.encode_tactile(all_left, all_right, train=train)  # (2b, nt, emb)
+            # Batch current + future into a single encoder forward to halve cost.
+            c_next     = jnp.clip(c + 1, 0, self.num_blocks - 1)
+            fut_left   = tac_left[idx, c_next]    # (b, H, W, 3)
+            fut_right  = tac_right[idx, c_next]   # (b, H, W, 3)
+            all_left   = jnp.concatenate([sel_left,  fut_left],  axis=0)   # (2b, H, W, 3)
+            all_right  = jnp.concatenate([sel_right, fut_right], axis=0)   # (2b, H, W, 3)
+
+            if self.tactile_encoder_type == "sparsh":
+                # For future frame, its "previous" is the current frame (sel)
+                all_prev_left  = jnp.concatenate([prev_left,  sel_left],  axis=0)  # (2b, H, W, 3)
+                all_prev_right = jnp.concatenate([prev_right, sel_right], axis=0)  # (2b, H, W, 3)
+                all_tokens = self.encode_tactile(
+                    all_left, all_right, all_prev_left, all_prev_right, train=train
+                )
+            else:
+                all_tokens = self.encode_tactile(all_left, all_right, train=train)
+
             current_tactile_tokens = all_tokens[:b]
-            future_tactile_target = all_tokens[b:]
+            future_tactile_target  = all_tokens[b:]
         else:
-            current_tactile_tokens = self.encode_tactile(sel_left, sel_right, train=train)
+            current_tactile_tokens = self.encode_tactile(
+                sel_left, sel_right, prev_left, prev_right, train=train
+            )
             future_tactile_target = None
 
         return current_tactile_tokens, future_tactile_target

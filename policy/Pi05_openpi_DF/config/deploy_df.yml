@@ -32,7 +32,18 @@ infer_time_schedule: blockwise
 #   例：action_horizon=50, block_size=5 → 10 block，第5/10/.../50步依次 clean
 block_size: 5
 
+# ─── 触觉反馈 ─────────────────────────────────────────────────────────────────
+# use_tactile: 启用 block 级触觉闭环评估（_eval_tactile）。
+#   要求：checkpoint 必须以 use_tactile: true 训练，且仿真环境 observation 中
+#   包含 tactile.left_gsmini.rgb_marker / right_gsmini.rgb_marker。
+#   false → 走 _eval_standard（一次性推理，无触觉闭环）
+use_tactile: true
+
 # ─── Tactile expert ──────────────────────────────────────────────────────────
 # 推理时 tactile expert 与 action 同步去噪。预测的 future tactile latent
 # 不直接使用，仅通过 mutual attention 为 action 提供前瞻触觉信息。
-# 此项无需手动设置，推理时自动从 ckpt 的 model config 读取。
+#
+# Mode 1（ResNet only）：use_tactile=true, use_tactile_expert=false
+# Mode 2（ResNet + expert）：use_tactile=true, use_tactile_expert=true
+# 必须与 eval_df.yaml 和训练时的 model_flags.json 保持一致，不一致时推理服务器报错。
+use_tactile_expert: false

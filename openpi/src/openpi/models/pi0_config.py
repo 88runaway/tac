@@ -161,7 +161,7 @@ class Pi0DFConfig(_model.BaseModelConfig):
     block_time_sampling: str = "independent"
 
     # ── Tactile injection (optional) ───────────────────────────────────────────
-    # When enabled, a ResNet-18 encodes left/right tactile rgb_marker images into
+    # When enabled, a tactile encoder maps left/right rgb_marker images into
     # 16 tokens each (32 total) that are prepended to the action-expert suffix.
     # During training the model selects the tactile frame corresponding to the
     # number of clean blocks (derived from the monotone progress scalar).
@@ -169,6 +169,23 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # becomes clean and its actions are executed on the robot.
     use_tactile: bool = False
     tactile_tokens_per_finger: int = 16
+
+    # Encoder backend:
+    #   "resnet"  — ResNet-18 trained from scratch (single frame, 3-ch input).
+    #               Original default; no extra dependencies.
+    #   "sparsh"  — Sparsh DINO ViT-Small (two frames cat'd → 6-ch input).
+    #               Requires converted weights at `sparsh_npz_path`.
+    #               AttentionPool + proj are randomly init'd; ViT is pretrained.
+    tactile_encoder_type: str = "resnet"
+
+    # Path to .npz weights produced by convert_sparsh_weights.py.
+    # Only used when tactile_encoder_type == "sparsh".
+    sparsh_npz_path: str = "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
+
+    # When True, freeze the ViT backbone of SparshTactileEncoder during training.
+    # The AttentionPool and projection layers are always trainable.
+    # Useful for the first phase of training when data is limited.
+    sparsh_freeze_backbone: bool = False
 
     # ── Tactile expert (future tactile prediction via flow matching) ────────────
     # When enabled, adds an INDEPENDENT Transformer (third expert) that denoises

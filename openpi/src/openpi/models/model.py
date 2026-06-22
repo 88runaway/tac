@@ -23,6 +23,27 @@ import openpi.shared.array_typing as at
 
 logger = logging.getLogger("openpi")
 
+
+def _fill_none_leaves(model_dict: dict, params: dict) -> dict:
+    """Re-insert None leaves from model_dict into params.
+
+    Flax NNX records ``bias = Param(value=None)`` for modules created with
+    ``use_bias=False``.  Orbax skips ``None`` values when saving, so loaded
+    checkpoints are missing those keys.  This helper walks both trees and adds
+    ``None`` back wherever the model expects it but the checkpoint omits it.
+    """
+    result = dict(params)
+    for k, v in model_dict.items():
+        if k not in result:
+            if v is None:
+                result[k] = None
+            elif isinstance(v, dict):
+                result[k] = _fill_none_leaves(v, {})
+        elif isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = _fill_none_leaves(v, result[k])
+    return result
+
+
 # Type variable for array types (JAX arrays, PyTorch tensors, or numpy arrays)
 ArrayT = TypeVar("ArrayT", bound=jax.Array | torch.Tensor | np.ndarray)
 
@@ -246,9 +267,14 @@ class BaseModelConfig(abc.ABC):
         """Create a model with the given parameters."""
         model = nnx.eval_shape(self.create, jax.random.key(0))
         graphdef, state = nnx.split(model)
+        pure_state = state.to_pure_dict()
         if remove_extra_params:
-            params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+            params = ocp.transform_utils.intersect_trees(pure_state, params)
+        # Flax NNX stores `bias=Param(value=None)` for Conv/Linear with use_bias=False,
+        # but orbax skips None leaves when saving, so checkpoints lack those keys.
+        # Re-insert None entries from the model state so the PyTree structures match.
+        params = _fill_none_leaves(pure_state, params)
+        at.check_pytree_equality(expected=pure_state, got=params, check_shapes=True, check_dtypes=False)
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 

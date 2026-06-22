@@ -134,6 +134,13 @@ class Policy(BasePolicy):
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
 
+        # Forward server stdout to main process so timing/debug logs are visible.
+        import threading
+        def _pipe_stdout(proc):
+            for line in iter(proc.stdout.readline, b""):
+                print(line.decode(errors="replace"), end="", flush=True)
+        threading.Thread(target=_pipe_stdout, args=(self._proc,), daemon=True).start()
+
         for _ in range(240):
             if os.path.exists(self._socket_path):
                 break
@@ -155,6 +162,7 @@ class Policy(BasePolicy):
             "num_inference_steps": self._num_inference_steps,
             "infer_time_schedule": self._infer_time_schedule,
             "block_size":          self._block_size,
+            "use_tactile":         self._use_tactile,
         }
         _send_msg(self._sock, _encode({"cmd": "init", "args": init_args}))
         reply = _decode(_recv_msg(self._sock))
@@ -181,12 +189,22 @@ class Policy(BasePolicy):
     def _get_tactile_images(self, observation) -> tuple[np.ndarray, np.ndarray]:
         """Extract and preprocess left/right tactile rgb_marker from observation."""
         tac = observation.get("tactile", {})
-        left = tac.get("left_gsmini", {}).get("rgb_marker")
-        right = tac.get("right_gsmini", {}).get("rgb_marker")
+        left = tac.get("left_tactile", {}).get("rgb_marker")
+        right = tac.get("right_tactile", {}).get("rgb_marker")
         if left is None or right is None:
+            print(f"[Pi0DF] WARNING: tactile keys not found! "
+                  f"available keys: {list(tac.keys())}", flush=True)
             return np.zeros((224, 224, 3), dtype=np.uint8), np.zeros((224, 224, 3), dtype=np.uint8)
         if isinstance(left, torch.Tensor):
+            _debug_left_raw = left
             left = self._preprocess_image(left)
+            if not hasattr(self, '_tactile_logged'):
+                self._tactile_logged = True
+                print(f"[Pi0DF] tactile OK: raw_shape={tuple(_debug_left_raw.shape)} "
+                      f"dtype={_debug_left_raw.dtype} "
+                      f"mean={_debug_left_raw.float().mean():.1f} "
+                      f"max={_debug_left_raw.float().max():.1f} "
+                      f"→ preprocessed {left.shape}", flush=True)
         if isinstance(right, torch.Tensor):
             right = self._preprocess_image(right)
         return np.asarray(left, dtype=np.uint8), np.asarray(right, dtype=np.uint8)
@@ -249,14 +267,22 @@ class Policy(BasePolicy):
         if "block_actions" not in reply:
             raise RuntimeError(f"[Pi0DF] tactile_start error: {reply.get('msg', '')}")
 
-        # Execute block 0
+        # Execute block 0 — skip per-step GelSight render (very expensive during contact)
         block_actions = np.load(io.BytesIO(reply["block_actions"]))
+        task._tactile_skip = True
         for a in block_actions:
             task.take_action(torch.from_numpy(a).to(task.device).float(), action_type="qpos")
+        task._tactile_skip = False
 
         # Continue: for each remaining block
         while True:
-            # Get fresh observation with new tactile
+            # Trigger a single fresh GelSight sensor render from current gelpad state.
+            # gelpad.update(dt) was already called in the last _step() with force_recompute=False,
+            # so the gelpad mesh is current. We only need the expensive sensor render (optical sim).
+            # SensorBase.update(dt=0, force_recompute=True) is the canonical pattern used
+            # by GelSightSensor itself internally (see _update_buffers_impl).
+            for tact in task._tactile_manager.tactiles.values():
+                tact.sensor.update(dt=0, force_recompute=True)
             new_obs = task._get_observations()
             tac_left, tac_right = self._get_tactile_images(new_obs)
 
@@ -272,8 +298,10 @@ class Policy(BasePolicy):
                 raise RuntimeError(f"[Pi0DF] tactile_continue error: {reply.get('msg', '')}")
 
             block_actions = np.load(io.BytesIO(reply["block_actions"]))
+            task._tactile_skip = True
             for a in block_actions:
                 task.take_action(torch.from_numpy(a).to(task.device).float(), action_type="qpos")
+            task._tactile_skip = False
 
             if reply.get("done", False):
                 break

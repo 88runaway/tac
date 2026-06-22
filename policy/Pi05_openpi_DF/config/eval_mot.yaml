@@ -15,7 +15,7 @@ task_config: demo               # Isaac Lab 任务配置文件名（task_config/
 # ─── Checkpoint ───────────────────────────────────────────────────────────────
 # JAX checkpoint 路径（orbax 格式），指向 train_df.py 输出的 step 目录
 # 也可用 CKPT_DIR 环境变量在运行时覆盖，无需修改此文件
-ckpt_dir: /data1/zjb/UniVTAC/outputs_openpi_df/checkpoints/pi05_univtac_df/pi05_df_insert_HDMI/16000
+ckpt_dir: /data1/zjb/UniVTAC/ckpt/lerobot/pi05_jax/frozen_mot/18k
 # ─── 硬件 ─────────────────────────────────────────────────────────────────────
 gpu_id: "2"                     # CUDA_VISIBLE_DEVICES；多卡示例："1,2"（seed 自动拆分）
 
@@ -34,8 +34,25 @@ infer_time_schedule: blockwise
 # block_size: null = 使用训练时的 num_blocks（推荐）
 block_size: 5
 
+# ─── 触觉模式 ─────────────────────────────────────────────────────────────────
+# 必须与训练时使用的模式一致，服务器启动时会与 model_flags.json 做双重校验：
+# 不一致时直接报错，避免用错模式的权重。
+#
+# Mode 1 — ResNet 编码触觉 token，注入 action suffix（原有方法）：
+#   use_tactile: true
+#   use_tactile_expert: false
+#
+# Mode 2 — ResNet + 独立 tactile expert（预测未来触觉）+ 双向 attend（新方法）：
+#   use_tactile: true
+#   use_tactile_expert: true
+use_tactile: true           # true = 使用触觉闭环评估（_eval_tactile）
+use_tactile_expert: true   # ← 与训练时 use_tactile_expert 保持一致！
+
 # ─── 其他 ─────────────────────────────────────────────────────────────────────
-decimation: 1
+# decimation: 训练数据以 save_frequency=2、decimation_train=1 采集
+#   → 有效帧率 60 Hz（16.67 ms/帧）
+#   → 评估时每 take_action() 需执行 2 个物理步 = 16.67 ms，与训练时序精确对齐
+decimation: 2
 instruction_type: seen
 save_video: true
 save_image: false

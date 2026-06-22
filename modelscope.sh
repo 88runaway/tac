@@ -1,6 +1,6 @@
 modelscope download \
-  --model JianboZhou/pi_all_128_20k \
-  --local_dir /data1/zjb/ckpt/lerobot/pi05_jax/all/128_20k
+  --model JianboZhou/pi_mot_128_18k \
+  --local_dir /data1/zjb/ckpt/lerobot/pi05_jax/frozen_mot/18k
 
 
 

@@ -13,7 +13,7 @@
 #   减小 block_size（增大 block_size 数值）可降低 num_blocks，从而减少 I/O 压力：
 #     block_size=5  → num_blocks=10 → 每样本 20 帧触觉（较慢，时间分辨率高）
 #     block_size=10 → num_blocks=5  → 每样本 10 帧触觉（较快，推荐初步实验）
-block_size: 5
+block_size: 5  # ⚡ Sparsh encoder: 两帧时序步长 = block_size/fps = 5/60 ≈ 83ms，与 Sparsh 预训练步长 ~80ms 匹配
 
 # mix_prob: 训练时以该概率使用逐 block 独立噪声（DF），
 #   其余概率退化为全 chunk 共享噪声（标准 flow matching），用于稳定训练
@@ -28,11 +28,29 @@ mix_prob: 1.0
 block_time_sampling: monotone
 
 # ─── Tactile injection (optional) ─────────────────────────────────────────────
-# 启用后，触觉 rgb_marker 图像通过 ResNet-18 编码为 16 token/指（共 32 token）
+# 启用后，触觉 rgb_marker 图像通过触觉编码器转为 16 token/指（共 32 token）
 # 注入 action expert suffix，由 block 进度标量决定使用哪帧触觉。
 # 需要用 convert_df_tactile.py 转出的带触觉的数据集。
 use_tactile: true
 tactile_tokens_per_finger: 16
+
+# tactile_encoder_type: 选择触觉编码器后端
+#   "resnet"  — ResNet-18，从零训练，单帧 3 通道输入（原始默认，无需额外权重）
+#   "sparsh"  — Sparsh DINO ViT-Small，双帧 6 通道（当前帧‖上一 block 边界帧），
+#               AttentionPool 压缩 197→16 token，ViT backbone 从预训练权重初始化，
+#               pool+proj 随机初始化需从头训练。
+#               需要先运行:
+#                 python policy/Pi05_openpi_DF/convert_sparsh_weights.py convert
+tactile_encoder_type: "resnet"
+
+# sparsh_npz_path: Sparsh 预训练权重路径（仅 tactile_encoder_type=="sparsh" 时使用）
+sparsh_npz_path: "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
+
+# sparsh_freeze_backbone: 是否冻结 Sparsh ViT backbone（pool+proj 始终可训）
+#   true  — 第一阶段训练推荐：backbone 固定，只更新 pool、proj 和其余模型参数
+#   false — 全量微调，训练数据足够时使用
+sparsh_freeze_backbone: false
+
 # 触觉数据集路径（仅在 use_tactile=true 时使用，覆盖默认 DATASET_ROOT）
 tactile_dataset_root: "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"
 
@@ -49,17 +67,21 @@ tactile_expert_variant: "gemma_300m"
 tactile_expert_num_tokens: 32
 # 触觉预测 velocity loss 的权重（相对于 action loss）
 tactile_expert_loss_weight: 1.0
+# tactile expert 内部是否使用 local attention（节省显存，牺牲少量全局建模能力）
+# 通常保持 false；显存极度紧张时才设 true
+tac_expert_local_attn: false
 
 # ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
 # true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。
 # 典型用法：warm start 已微调过的 ckpt 改造成 DF 时，只训 action_expert，
 #   其余全部冻结 —— 即 img/paligemma/projections 设 true、action_expert 设 false。
 freeze:
-  img:            true   # SigLIP 图像编码器
-  paligemma:      true  # PaliGemma 主干 (gemma_2b, prefix LLM)
-  action_expert:  false   # Action Expert (gemma_300m, 去噪/速度预测)
-  projections:    false   # action_in_proj / action_out_proj / time_mlp_in / time_mlp_out / state_proj
-  tactile_expert_freeze: false  # Tactile Expert 的 tac_expert_* 投影层
+  img:                    true   # SigLIP 图像编码器
+  paligemma:              true   # PaliGemma 主干 (gemma_2b, prefix LLM)
+  action_expert:          false  # Action Expert (gemma_300m, 去噪/速度预测)
+  projections:            false  # action_in_proj / action_out_proj / time_mlp_*
+  tactile_expert_freeze:  false  # Tactile Expert 的 tac_expert_* 投影层
+  sparsh_freeze_backbone: false  # Sparsh ViT backbone（pool+proj 始终可训）
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
 batch_size: 128      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
