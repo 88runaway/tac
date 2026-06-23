@@ -151,11 +151,16 @@ class Pi0DF(_model.BaseModel):
         self.tactile_tokens_per_finger = config.tactile_tokens_per_finger
         self.tactile_encoder_type = config.tactile_encoder_type
         if self.use_tactile:
+            _use_reg_tok = (
+                config.tactile_encoder_type == "sparsh"
+                and getattr(config, "use_tactile_register_token", False)
+            )
             if config.tactile_encoder_type == "sparsh":
                 self.tactile_encoder = _sparsh_enc.SparshTactileEncoder.from_pretrained(
                     npz_path=config.sparsh_npz_path,
                     output_dim=action_expert_config.width,
                     num_tokens=self.tactile_tokens_per_finger,
+                    use_register_token=_use_reg_tok,
                     rngs=rngs,
                 )
                 if config.sparsh_freeze_backbone:
@@ -169,7 +174,16 @@ class Pi0DF(_model.BaseModel):
                     num_tokens=self.tactile_tokens_per_finger,
                     rngs=rngs,
                 )
-            self.num_tactile_tokens = self.tactile_tokens_per_finger * 2  # left + right
+            # Each finger outputs (tactile_tokens_per_finger + 1) tokens when
+            # the register token is enabled, otherwise tactile_tokens_per_finger.
+            _tokens_per_finger = self.tactile_tokens_per_finger + (1 if _use_reg_tok else 0)
+            self.num_tactile_tokens = _tokens_per_finger * 2  # left + right
+
+        # ── Tactile attention-to-prefix control ──────────────────────────────────
+        # When False, current tactile tokens in the suffix are blocked from
+        # attending to prefix tokens (image/language); they can only self-attend
+        # and attend to action tokens.
+        self.tactile_attend_prefix = config.tactile_attend_prefix
 
         # ── Tactile expert projections (independent Transformer via 3rd expert) ───
         if self.use_tactile_expert:
@@ -194,6 +208,9 @@ class Pi0DF(_model.BaseModel):
             + (f" [{config.tactile_encoder_type}]" if self.use_tactile else "")
             + (f", freeze_backbone={config.sparsh_freeze_backbone}"
                if self.use_tactile and config.tactile_encoder_type == "sparsh" else "")
+            + (f", tactile_attend_prefix={self.tactile_attend_prefix}"
+               f", num_tactile_tokens={self.num_tactile_tokens}"
+               if self.use_tactile else "")
             + f", use_tactile_expert={self.use_tactile_expert}"
             + (f", tactile_expert_variant={config.tactile_expert_variant}" if self.use_tactile_expert else "")
         )
@@ -514,6 +531,47 @@ class Pi0DF(_model.BaseModel):
         block = is_tac_q[:, None] & is_block1_k[None, :]              # (q, k)
         return attn_mask & ~block[None, :, :]  # broadcast over batch
 
+    def _apply_tactile_no_prefix_mask(
+        self,
+        attn_mask: at.Bool[at.Array, "b q k"],
+        prefix_len: int,
+        suffix_len: int,
+        *,
+        is_cached: bool,
+    ) -> at.Bool[at.Array, "b q k"]:
+        """Block current tactile tokens (suffix head) from attending to prefix tokens.
+
+        Sequence layout:
+          Full forward:   [prefix(p) | suffix(s)]   key cols same
+          Cached forward: [suffix(s)]  query,  key cols: [prefix(p) | suffix(s)]
+
+        Tactile tokens occupy the first ``self.num_tactile_tokens`` positions of the
+        suffix (pi05=True, so no state token prepended).
+        """
+        nt = self.num_tactile_tokens
+        q_len = attn_mask.shape[1]
+        k_len = attn_mask.shape[2]
+
+        if is_cached:
+            # query: current part starts at 0; tactile at 0..nt-1
+            tac_q_start = 0
+            tac_q_end = nt
+            # key: [prefix(p) | suffix(s)] — prefix occupies 0..prefix_len-1
+            prefix_k_end = prefix_len
+        else:
+            # query: tactile starts after prefix
+            tac_q_start = prefix_len
+            tac_q_end = prefix_len + nt
+            # key: prefix occupies 0..prefix_len-1
+            prefix_k_end = prefix_len
+
+        q_idx = jnp.arange(q_len)
+        k_idx = jnp.arange(k_len)
+        is_tac_q  = (q_idx >= tac_q_start) & (q_idx < tac_q_end)   # (q,)
+        is_prefix_k = k_idx < prefix_k_end                            # (k,)
+        block = is_tac_q[:, None] & is_prefix_k[None, :]              # (q, k)
+        return attn_mask & ~block[None, :, :]  # broadcast over batch
+
     def _forward_3expert(
         self,
         prefix_tokens, prefix_mask, prefix_ar_mask,
@@ -548,6 +606,14 @@ class Pi0DF(_model.BaseModel):
                     prefix_len=prefix_tokens.shape[1],
                     suffix_len=suffix_tokens.shape[1],
                     nft=tac_expert_tokens.shape[1],
+                    is_cached=False,
+                )
+            # Block tactile tokens from attending to prefix when tactile_attend_prefix=False
+            if self.use_tactile and not self.tactile_attend_prefix:
+                attn_mask = self._apply_tactile_no_prefix_mask(
+                    attn_mask,
+                    prefix_len=prefix_tokens.shape[1],
+                    suffix_len=suffix_tokens.shape[1],
                     is_cached=False,
                 )
             positions = jnp.cumsum(input_mask, axis=1) - 1
@@ -590,6 +656,18 @@ class Pi0DF(_model.BaseModel):
                     prefix_len=_plen,
                     suffix_len=_slen,
                     nft=_nft,
+                    is_cached=True,
+                )
+            # Block tactile tokens from attending to prefix when tactile_attend_prefix=False
+            if self.use_tactile and not self.tactile_attend_prefix:
+                _slen = suffix_tokens.shape[1]
+                _plen = full_attn_mask.shape[2] - _slen - (
+                    tac_expert_tokens.shape[1] if tac_expert_tokens is not None else 0
+                )
+                full_attn_mask = self._apply_tactile_no_prefix_mask(
+                    full_attn_mask,
+                    prefix_len=_plen,
+                    suffix_len=_slen,
                     is_cached=True,
                 )
             positions_local = (

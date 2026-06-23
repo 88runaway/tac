@@ -286,7 +286,7 @@ def _load_vit_weights(
 class SparshTactileEncoder(nnx.Module):
     """Sparsh DINO ViT-Small + bilinear spatial pooling + position encodings.
 
-    Pipeline (per finger):
+    Pipeline (per finger, use_register_token=False):
 
         (B, H, W, 6)  ──►  SparshViTSmall  ──►  (B, 197, 384)
                            drop register token  ►  (B, 196, 384)
@@ -296,6 +296,19 @@ class SparshTactileEncoder(nnx.Module):
                            Linear               ►  (B, 16, output_dim)
                          + spatial_emb[0:16]      # learnable 4×4 grid position (zero-init)
                          + finger_emb[finger_idx] # learnable finger identity   (zero-init)
+
+    Pipeline (per finger, use_register_token=True):
+
+        (B, H, W, 6)  ──►  SparshViTSmall  ──►  (B, 197, 384)
+                           register token       ►  (B, 1,  384)  ──► Linear ──► (B, 1,  D)
+                                                                   + register_token_emb (D,)
+                                                                   + finger_emb[finger_idx]
+                           patch tokens         ►  (B, 196, 384) ──► [pool+proj as above]
+                           concat               ►  (B, 17, output_dim)
+                                                    [0]   = global register summary
+                                                    [1:17] = spatial 4×4 grid tokens
+
+        Two fingers combined: (B, 34, output_dim).
 
     Why bilinear pool instead of attention pool:
       - Gemma action expert already provides 18 layers of cross-token interaction;
@@ -320,6 +333,11 @@ class SparshTactileEncoder(nnx.Module):
         )
         left_tokens  = encoder(left_pair,  finger_idx=0)  # (B, 16, 1024)
         right_tokens = encoder(right_pair, finger_idx=1)  # (B, 16, 1024)
+
+        # With register token:
+        encoder = SparshTactileEncoder.from_pretrained(..., use_register_token=True)
+        left_tokens  = encoder(left_pair,  finger_idx=0)  # (B, 17, 1024)
+        right_tokens = encoder(right_pair, finger_idx=1)  # (B, 17, 1024)
     """
 
     VIT_PATCH_GRID = 14   # ViT-Small/16 on 224×224 → 14×14 patch grid
@@ -329,6 +347,7 @@ class SparshTactileEncoder(nnx.Module):
         output_dim:  int,
         num_tokens:  int = 16,
         *,
+        use_register_token: bool = False,
         rngs: nnx.Rngs,
     ):
         assert int(num_tokens ** 0.5) ** 2 == num_tokens, (
@@ -337,11 +356,12 @@ class SparshTactileEncoder(nnx.Module):
         self.num_tokens = num_tokens
         self.output_dim = output_dim
         self.grid = int(num_tokens ** 0.5)   # 4
+        self.use_register_token = use_register_token
 
         # ViT backbone — pretrained weights loaded via from_pretrained()
         self.backbone = SparshViTSmall(rngs=rngs)
 
-        # Linear projection:  EMBED_DIM → output_dim
+        # Linear projection:  EMBED_DIM → output_dim  (shared for patches and register token)
         self.proj = nnx.Linear(EMBED_DIM, output_dim, use_bias=True, rngs=rngs)
 
         # Spatial position embedding: one vector per 4×4 grid cell.
@@ -350,9 +370,15 @@ class SparshTactileEncoder(nnx.Module):
         self.spatial_emb = nnx.Param(jnp.zeros((num_tokens, output_dim)))
 
         # Finger identity embedding: left=0, right=1.
-        # Broadcast to all 16 tokens of that finger.
+        # Broadcast to all tokens of that finger.
         # Zero-init: safe starting point, learned from task data.
         self.finger_emb = nnx.Param(jnp.zeros((2, output_dim)))
+
+        # Register token identity embedding (only allocated when use_register_token=True).
+        # Encodes "this is the global summary token, not a spatial patch token".
+        # Zero-init: preserves pretrained ViT register-token features at init.
+        if use_register_token:
+            self.register_token_emb = nnx.Param(jnp.zeros((output_dim,)))
 
     def __call__(self, x: jax.Array, finger_idx: int = 0) -> jax.Array:
         """Encode a single finger's tactile image pair.
@@ -363,7 +389,9 @@ class SparshTactileEncoder(nnx.Module):
             finger_idx: 0 = left finger, 1 = right finger.
 
         Returns:
-            (B, num_tokens, output_dim) token embeddings.
+            (B, num_tokens, output_dim) if use_register_token=False.
+            (B, num_tokens+1, output_dim) if use_register_token=True,
+                where index 0 is the register (global) token.
         """
         B    = x.shape[0]
         G    = self.grid                                 # 4
@@ -372,7 +400,16 @@ class SparshTactileEncoder(nnx.Module):
         # ── ViT backbone ──────────────────────────────────────────────────────
         vit_out = self.backbone(x)                       # (B, 197, 384)
 
-        # Drop register token; keep the 196 patch tokens
+        # ── Optional: extract register token before dropping it ───────────────
+        if self.use_register_token:
+            reg_feat  = vit_out[:, 0:1, :]               # (B, 1, 384)
+            reg_token = self.proj(reg_feat)               # (B, 1, output_dim)
+            # Global identity: "this is a register/summary token"
+            reg_token = reg_token + self.register_token_emb.value  # broadcast (D,)
+            # Finger identity: left vs right (same as spatial tokens)
+            reg_token = reg_token + self.finger_emb.value[finger_idx]
+
+        # ── Patch tokens ──────────────────────────────────────────────────────
         patches = vit_out[:, 1:, :]                      # (B, 196, 384)
 
         # ── Bilinear spatial pool: 14×14 → 4×4 ──────────────────────────────
@@ -388,15 +425,16 @@ class SparshTactileEncoder(nnx.Module):
         tokens = self.proj(patches)                      # (B, 16, output_dim)
 
         # ── Spatial position encoding (4×4 grid, row-major) ─────────────────
-        # spatial_emb[i] encodes "token i is at grid position (i//4, i%4)"
         tokens = tokens + self.spatial_emb.value         # (16, D) broadcast over B
 
         # ── Finger identity encoding ─────────────────────────────────────────
-        # finger_emb[0] = left, finger_emb[1] = right
-        # Scalar shift broadcast over all 16 tokens of this finger
         tokens = tokens + self.finger_emb.value[finger_idx]  # (D,) broadcast
 
-        return tokens                                    # (B, 16, output_dim)
+        # ── Prepend register token (global summary at index 0) ───────────────
+        if self.use_register_token:
+            tokens = jnp.concatenate([reg_token, tokens], axis=1)  # (B, 17, D)
+
+        return tokens                                    # (B, num_tokens[+1], output_dim)
 
     @classmethod
     def from_pretrained(
@@ -405,25 +443,31 @@ class SparshTactileEncoder(nnx.Module):
         output_dim: int,
         num_tokens: int = 16,
         *,
+        use_register_token: bool = False,
         rngs:  nnx.Rngs,
         dtype: str = "float32",
     ) -> "SparshTactileEncoder":
         """Create encoder with pretrained ViT backbone.
 
-        ``proj``, ``spatial_emb``, and ``finger_emb`` are zero / randomly
-        initialised and must be trained on robot data.
+        ``proj``, ``spatial_emb``, ``finger_emb``, and (optionally)
+        ``register_token_emb`` are zero / randomly initialised and must be
+        trained on robot data.
 
         Args:
-            npz_path:   Path to .npz produced by convert_sparsh_weights.py.
-            output_dim: Action-expert feature width (e.g. 1024 for gemma_300m).
-            num_tokens: Spatial tokens per finger (default 16 = 4×4 grid).
-            rngs:       Flax RNG state.
-            dtype:      "float32" or "bfloat16".
+            npz_path:           Path to .npz produced by convert_sparsh_weights.py.
+            output_dim:         Action-expert feature width (e.g. 1024 for gemma_300m).
+            num_tokens:         Spatial tokens per finger (default 16 = 4×4 grid).
+            use_register_token: If True, prepend the ViT register token as an extra
+                                global-summary token per finger (output: num_tokens+1
+                                per finger). Default False.
+            rngs:               Flax RNG state.
+            dtype:              "float32" or "bfloat16".
         """
-        encoder = cls(output_dim, num_tokens, rngs=rngs)
+        encoder = cls(output_dim, num_tokens, use_register_token=use_register_token, rngs=rngs)
         _load_vit_weights(encoder.backbone, npz_path, dtype=dtype)
+        extra = " + register_token_emb" if use_register_token else ""
         logger.info(
             "[SparshTactileEncoder] backbone loaded; "
-            "proj + spatial_emb + finger_emb randomly / zero-initialised."
+            f"proj + spatial_emb + finger_emb{extra} zero-initialised."
         )
         return encoder

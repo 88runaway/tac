@@ -38,6 +38,9 @@ python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 4,5,6,7 \
     --block_time_sampling monotone --mix_prob 1.0 \
     --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
 
+python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 4,5,6,7 \
+    --train_config policy/Pi05_openpi_DF/config/train_sparsh_new.yaml --overwrite
+
 
 python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 0,1,2,3 \
     --use_tactile true --use_tactile_expert true \

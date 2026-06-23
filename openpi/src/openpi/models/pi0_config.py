@@ -187,6 +187,15 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # Useful for the first phase of training when data is limited.
     sparsh_freeze_backbone: bool = False
 
+    # When True, the ViT register token (global DINO summary at index 0 of the
+    # 197-token sequence) is extracted and prepended as an extra token per finger,
+    # yielding (tactile_tokens_per_finger + 1) tokens per finger instead of
+    # tactile_tokens_per_finger.  Total tactile tokens = (tactile_tokens_per_finger+1)*2.
+    # Only applicable when tactile_encoder_type == "sparsh"; silently ignored otherwise.
+    # The register token receives finger_emb but NOT spatial_emb; a dedicated
+    # register_token_emb (zero-init, D-dim) is added to distinguish it from spatial tokens.
+    use_tactile_register_token: bool = False
+
     # ── Tactile expert (future tactile prediction via flow matching) ────────────
     # When enabled, adds an INDEPENDENT Transformer (third expert) that denoises
     # future tactile latent tokens alongside the action tokens. Both experts have
@@ -206,6 +215,14 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # This enforces a local attention pattern: tactile predicts future tactile
     # conditioned only on the immediately upcoming action block.
     tac_expert_local_attn: bool = False
+
+    # When True (default), current tactile tokens in the action-expert suffix are
+    # allowed to attend to all prefix tokens (image/language conditioning), which
+    # is the standard cross-stream behaviour.
+    # When False, tactile tokens are restricted to self-attend only (they cannot
+    # attend to any prefix token), effectively making them a prefix-independent
+    # tactile condition that interacts with action tokens only.
+    tactile_attend_prefix: bool = True
 
     def __post_init__(self):
         if self.max_token_len is None:

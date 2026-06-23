@@ -301,6 +301,8 @@ def _make_model_config(args, num_blocks: int):
         tactile_expert_variant=getattr(args, "tactile_expert_variant", "gemma_300m"),
         tactile_expert_num_tokens=getattr(args, "tactile_expert_num_tokens", 32),
         tactile_expert_loss_weight=getattr(args, "tactile_expert_loss_weight", 0.5),
+        tactile_attend_prefix=getattr(args, "tactile_attend_prefix", True),
+        use_tactile_register_token=getattr(args, "use_tactile_register_token", False),
     )
 
 
@@ -708,7 +710,14 @@ def train_multitask(args):
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    cfg = _load_cfg(DEFAULT_CFG)
+    # ── Pre-parse --train_config before building the full parser so that all
+    #    subsequent argument defaults are sourced from the user-specified yaml.
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--train_config", default=str(DEFAULT_CFG),
+                      help="Path to training yaml config (default: config/train_df.yaml)")
+    _pre_args, _ = _pre.parse_known_args()
+    cfg_path = Path(_pre_args.train_config)
+    cfg = _load_cfg(cfg_path)
     opt = cfg.get("optimizer", {})
 
     parser = argparse.ArgumentParser(
@@ -724,6 +733,8 @@ def main():
         ),
     )
     parser.add_argument("--gpu", type=str, default="0")
+    parser.add_argument("--train_config", default=str(DEFAULT_CFG),
+                        help="Path to training yaml config (default: config/train_df.yaml)")
     parser.add_argument("--config", default=str(DEFAULT_MT_CFG),
                         help="Path to multitask_config.json (only used when --task all)")
 
@@ -778,6 +789,20 @@ def main():
     parser.add_argument("--tactile_expert_variant", type=str,
                         default=cfg.get("tactile_expert_variant", "gemma_300m"),
                         help="Tactile expert Transformer 架构 (gemma_300m / gemma_2b)")
+    parser.add_argument("--tactile_attend_prefix", type=_str2bool,
+                        default=cfg.get("tactile_attend_prefix", True),
+                        help=(
+                            "true(默认): suffix 中的触觉 token 可以 attend prefix（图像/语言条件）; "
+                            "false: 触觉 token 仅 self-attend，不与 prefix 交互"
+                        ))
+    parser.add_argument("--use_tactile_register_token", type=_str2bool,
+                        default=cfg.get("use_tactile_register_token", False),
+                        help=(
+                            "仅对 tactile_encoder_type==sparsh 有效。"
+                            "true: 将 Sparsh ViT 的 register token（全局 DINO 摘要）作为额外 token 加入 suffix，"
+                            "每个手指输出 tactile_tokens_per_finger+1 个 token（共 34 个）; "
+                            "false(默认): 丢弃 register token，仅使用 16 个空间 patch token（共 32 个）"
+                        ))
 
     # ── Module freezing (true = freeze) ───────────────────────────────────────
     fz = cfg.get("freeze", {}) or {}
