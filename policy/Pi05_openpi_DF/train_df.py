@@ -50,7 +50,8 @@ import yaml
 SCRIPT_DIR     = Path(__file__).parent
 UNIVTAC_ROOT   = SCRIPT_DIR.parent.parent
 OPENPI_ROOT    = Path("/data/zjb/UniVTAC/openpi")
-DATASET_ROOT   = Path("/data/zjb/UniVTAC/data_lerobot_openpi")
+_DATASET_ROOT_DEFAULT = Path("/data/zjb/data/UniVTAC")
+DATASET_ROOT   = _DATASET_ROOT_DEFAULT  # overridden by --dataset_root / yaml dataset_root
 BASE_FPS       = 60
 CKPT_PATH      = Path("/data/zjb/ckpts/pi05_jax")
 TASK_SETTINGS  = UNIVTAC_ROOT / "policy" / "task_settings.json"
@@ -115,8 +116,20 @@ MULTITASK_REPACK_MAP = {
     "observation/wrist_image": "observation.images.wrist",
     "observation/state":       "observation.state",
     "actions":                 "action",
-    "prompt":                       "task",
+    "prompt":                  "task",
 }
+
+def _build_multitask_repack_map(use_tactile: bool = False) -> dict:
+    """Build repack map for multitask dataset (tac_all format).
+
+    tac_all column names match individual task datasets:
+      observation.images.head / wrist / tactile_left / tactile_right
+    """
+    m = dict(MULTITASK_REPACK_MAP)
+    if use_tactile:
+        m["observation/tactile_left"]  = "observation.images.tactile_left"
+        m["observation/tactile_right"] = "observation.images.tactile_right"
+    return m
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -291,6 +304,8 @@ def _make_model_config(args, num_blocks: int):
         num_blocks=num_blocks,
         mix_prob=args.mix_prob,
         block_time_sampling=args.block_time_sampling,
+        reweight_gamma=getattr(args, "reweight_gamma", 1.0),
+        phase_alpha=getattr(args, "phase_alpha", 1.0),
         use_tactile=getattr(args, "use_tactile", False),
         tactile_tokens_per_finger=getattr(args, "tactile_tokens_per_finger", 16),
         tactile_encoder_type=getattr(args, "tactile_encoder_type", "resnet"),
@@ -432,6 +447,8 @@ def _compute_norm_stats_multitask_from_parquet(dataset_dir: str) -> Path:
 # ─── train ────────────────────────────────────────────────────────────────────
 
 def train_singletask(args, task_name: str):
+    global DATASET_ROOT
+    DATASET_ROOT = Path(getattr(args, "dataset_root", _DATASET_ROOT_DEFAULT))
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
@@ -452,15 +469,15 @@ def train_singletask(args, task_name: str):
     repack_map = _build_repack_map(task_name)
 
     use_tactile = getattr(args, "use_tactile", False)
+    # 无论是否启用触觉，均使用 tactile_dataset_root 下的数据集（包含 head/wrist/tactile 全部模态）。
+    # use_tactile=False 时只是不把 tactile 列加入 repack_map，不加载触觉图像。
+    tac_root = Path(getattr(args, "tactile_dataset_root",
+                            "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"))
+    dataset_dir = str(tac_root / task_name)
+    repo_id = f"univtac_df_tac/{task_name}"
     if use_tactile:
-        tac_root = Path(getattr(args, "tactile_dataset_root", "/data1/zjb/data_lerobot_openpi_df_tactile"))
-        dataset_dir = str(tac_root / task_name)
-        repo_id = f"univtac_df_tac/{task_name}"
         repack_map["observation/tactile_left"] = "observation.images.tactile_left"
         repack_map["observation/tactile_right"] = "observation.images.tactile_right"
-    else:
-        dataset_dir = str(DATASET_ROOT / task_name)
-        repo_id = f"univtac/{task_name}"
 
     norm_asset_id = f"univtac_{task_name}"
     norm_asset_dir = CKPT_PATH / "assets" / "univtac" / norm_asset_id
@@ -588,6 +605,8 @@ def train_singletask(args, task_name: str):
 
 
 def train_multitask(args):
+    global DATASET_ROOT
+    DATASET_ROOT = Path(getattr(args, "dataset_root", _DATASET_ROOT_DEFAULT))
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
@@ -602,12 +621,19 @@ def train_multitask(args):
     with open(args.config) as f:
         mt_config = json.load(f)
 
-    output_root = Path(mt_config["output_root"])
-    dataset_dir = str(output_root / "multitask")
+    # dataset_dir: 优先使用 --multitask_data_dir（或 yaml multitask_data_dir）；
+    # 若未指定则回落到 multitask_config.json 的 output_root/multitask（旧行为）。
+    _default_mt_data = getattr(args, "multitask_data_dir", None)
+    if _default_mt_data:
+        dataset_dir = str(Path(_default_mt_data))
+    else:
+        output_root = Path(mt_config["output_root"])
+        dataset_dir = str(output_root / "multitask")
     if not Path(dataset_dir).exists():
         raise FileNotFoundError(
-            f"Multi-task dataset not found at {dataset_dir}. "
-            "Run convert_multitask_to_openpi.py first."
+            f"Multi-task dataset not found at {dataset_dir}.\n"
+            "  指定路径: --multitask_data_dir <path>\n"
+            "  或先运行 convert_df_tactile.py 生成合并数据集。"
         )
 
     num_blocks = args.action_horizon // args.block_size
@@ -619,17 +645,19 @@ def train_multitask(args):
     norm_asset_dir = CKPT_PATH / "assets" / "univtac" / norm_asset_id
     actual_norm_dir = _resolve_norm_stats_multitask(args, norm_asset_dir, dataset_dir)
 
+    _use_tactile_mt = getattr(args, "use_tactile", False)
+    _mt_repack = _build_multitask_repack_map(use_tactile=_use_tactile_mt)
     base = opi_config.get_config(OPENPI_CONFIG)
     data_factory = dataclasses.replace(
         base.data,
-        repo_id="univtac/multitask",
+        repo_id="univtac_df_tac/multitask",
         local_root=dataset_dir,
         default_prompt="Perform the manipulation task.",
         assets=opi_config.AssetsConfig(
             assets_dir=str(actual_norm_dir.parent),
             asset_id=actual_norm_dir.name,
         ),
-        repack_transforms=_transforms.Group(inputs=[_transforms.RepackTransform(MULTITASK_REPACK_MAP)]),
+        repack_transforms=_transforms.Group(inputs=[_transforms.RepackTransform(_mt_repack)]),
     )
 
     model_config = _make_model_config(args, num_blocks)
@@ -735,8 +763,18 @@ def main():
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--train_config", default=str(DEFAULT_CFG),
                         help="Path to training yaml config (default: config/train_df.yaml)")
+    parser.add_argument("--dataset_root", type=str,
+                        default=cfg.get("dataset_root", str(_DATASET_ROOT_DEFAULT)),
+                        help="非触觉数据集根目录，任务数据位于 {dataset_root}/{task_name}（默认 /data/zjb/data/UniVTAC）")
     parser.add_argument("--config", default=str(DEFAULT_MT_CFG),
                         help="Path to multitask_config.json (only used when --task all)")
+    parser.add_argument("--multitask_data_dir", type=str,
+                        default=cfg.get("multitask_data_dir",
+                                        "/data/zjb/data/UniVTAC/tac_all"),
+                        help=(
+                            "--task all 时使用的多任务合并数据集路径（默认 /data/zjb/data/UniVTAC/tac_all）。"
+                            "若未设置则回落到 multitask_config.json 的 output_root/multitask。"
+                        ))
 
     # ── Diffusion Forcing params ──────────────────────────────────────────────
     parser.add_argument("--block_size", type=int, default=cfg.get("block_size", 5),
@@ -752,6 +790,26 @@ def main():
             "independent = 每个 block 独立随机噪声等级(原始行为); "
             "monotone = 固定的单调递增噪声等级(靠前 block 更早 clean), "
             "与推理 blockwise 金字塔调度同分布, 推荐用于消除抖动。"
+        ),
+    )
+    parser.add_argument(
+        "--reweight_gamma", type=float,
+        default=cfg.get("reweight_gamma", 1.0),
+        help=(
+            "monotone 调度下逆频率 loss 加权的指数: w_k = (nb/(k+1))^gamma, 归一化后 mean=1。"
+            "gamma=0 禁用加权；gamma=0.5 缓和；gamma=1.0 完全逆频率（默认）。"
+            "仅在 block_time_sampling==monotone 时生效。"
+        ),
+    )
+    parser.add_argument(
+        "--phase_alpha", type=float,
+        default=cfg.get("phase_alpha", 1.0),
+        help=(
+            "monotone 调度中 phase 的 Beta(alpha,1) 分布参数。"
+            "alpha=1.0 = Uniform(0,1)（默认，无改变）；"
+            "alpha<1 使 phase 偏向 0（高噪声区域），增加早期 block 的训练频率和 t>0.5 占比。"
+            "推荐: alpha=0.7（温和）或 alpha=0.5（中等）。"
+            "仅在 block_time_sampling==monotone 时生效。"
         ),
     )
 

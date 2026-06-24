@@ -27,11 +27,45 @@ mix_prob: 1.0
 #                 可避免训练分布覆盖不到推理状态而导致的抖动，推荐使用
 block_time_sampling: monotone
 
+# reweight_gamma: monotone 调度下逆频率 loss 加权的指数参数
+#   w_k = (num_blocks / (k+1)) ^ gamma，归一化后 mean(w_k) = 1
+#
+# 控制加权强度，平滑可调：
+#   gamma = 0.0  →  无加权（所有 block 等权，回退旧行为）
+#   gamma = 0.5  →  缓和加权（block 0/9 权重比 ≈ 3.2:1）
+#   gamma = 1.0  →  完全逆频率（block 0/9 权重比 = 10:1，完全均衡期望梯度）
+#   gamma > 1.0  →  激进加权（更大力度补偿早期 block）
+#
+# 仅在 block_time_sampling == monotone 时生效，independent 时自动忽略。
+reweight_gamma: 0.5
+
+# phase_alpha: monotone 调度中 phase 的 Beta(alpha, 1) 分布参数
+#
+# 原理: monotone 采样中 t_k = clip(1 - phase × nb/(k+1), 0, 1)
+#   block 0 仅在 phase < 1/nb 时有梯度（10% 概率）。
+#   phase ~ Uniform(0,1) 时，有梯度的 t 均匀分布在 (0,1)。
+#   推理用 num_steps=50 时，block 0 实际需要 t ∈ [0.2, 1.0]（5步去噪）。
+#
+# Beta(alpha, 1) 将 phase 偏向 0（高噪声区），让更多训练样本落在
+# 推理真正需要的状态（所有 block 同时高噪声），直接改善覆盖率：
+#
+#   alpha = 1.0  →  Uniform，无变化（默认，向后兼容）
+#   alpha = 0.7  →  温和偏向：block 0 有梯度率 10% → 20%，推荐初次实验
+#   alpha = 0.5  →  中等偏向：block 0 有梯度率 10% → 32%，推荐常规使用
+#   alpha = 0.3  →  强偏向：block 0 有梯度率 10% → 50%，可能过于 aggressive
+#
+# 与 reweight_gamma 正交，两者可同时使用：
+#   phase_alpha 修复"训练密度分布"问题
+#   reweight_gamma 修复"总梯度量"问题
+#
+# 仅在 block_time_sampling == monotone 时生效，independent 时自动忽略。
+phase_alpha: 0.7
+
 # ─── Tactile injection (optional) ─────────────────────────────────────────────
 # 启用后，触觉 rgb_marker 图像通过触觉编码器转为 16 token/指（共 32 token）
 # 注入 action expert suffix，由 block 进度标量决定使用哪帧触觉。
 # 需要用 convert_df_tactile.py 转出的带触觉的数据集。
-use_tactile: true
+use_tactile: false
 tactile_tokens_per_finger: 16
 
 # tactile_encoder_type: 选择触觉编码器后端
@@ -51,8 +85,14 @@ sparsh_npz_path: "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
 #   false — 全量微调，训练数据足够时使用
 sparsh_freeze_backbone: false
 
-# 触觉数据集路径（仅在 use_tactile=true 时使用，覆盖默认 DATASET_ROOT）
+# 数据集根目录（含 head/wrist/tactile 全部模态的完整 lerobot 数据集）
+# 无论是否启用触觉，均从此路径加载数据；任务子目录 = tactile_dataset_root / task_name
+# use_tactile=false 时只不加载 tactile 图像列，不影响 head/wrist 的训练
 tactile_dataset_root: "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"
+
+# --task all 时使用的多任务合并数据集路径（单一 lerobot 格式数据集目录）
+# 为空时回落到 multitask_config.json 的 output_root/multitask
+multitask_data_dir: "/data/zjb/data/UniVTAC/tac_all"
 
 # ─── Tactile expert (future tactile prediction) ──────────────────────────────
 # 启用后，新增一个 flow matching 流与 action 同步去噪，预测下一个 block 边界
@@ -101,8 +141,8 @@ freeze:
   sparsh_freeze_backbone: false  # Sparsh ViT backbone（pool+proj 始终可训）
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
-batch_size: 256      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
-steps: 15000
+batch_size: 192      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+steps: 20000
 lr: 8e-5
 warmup_steps: 1000
 save_freq: 2000    # 每隔多少步保存一次 checkpoint
@@ -126,15 +166,15 @@ keep_period: 5000
 
 # ─── FSDP ─────────────────────────────────────────────────────────────────────
 # 单 GPU 设为 1；多任务多 GPU 推荐设为 GPU 数量（须为 2 的幂次：1/2/4/8）
-fsdp_devices: 4
+fsdp_devices: 1
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
-output_dir: "/data/zjb/ckpts/pi05_df_token_lift_can"
+output_dir: "/data/zjb/ckpts/pi05_df_reweight_lift_can"
 
 # ─── WandB ────────────────────────────────────────────────────────────────────
 # 仅记录训练损失等标量，不上传模型参数或 artifact
 wandb: true
-wandb_project: "univtac-pi05-df-token-lift-can"
+wandb_project: "univtac-pi05-df-lift-can"
 
 # ─── AdamW Optimizer ─────────────────────────────────────────────────────────
 # optimizer:

@@ -1,0 +1,42 @@
+{
+    "tasks": {
+        "lift_can": {
+            "num_episodes": 100,
+            "instruction": "Pick up the can and place it in the basket."
+        },
+        "lift_bottle": {
+            "num_episodes": 40,
+            "instruction": "Pick up the bottle and place it upright."
+        },
+        "insert_tube": {
+            "num_episodes": 100,
+            "instruction": "Insert the tube into the connector."
+        },
+        "insert_hole": {
+            "num_episodes": 100,
+            "instruction": "Insert the peg into the hole."
+        },
+        "insert_HDMI": {
+            "num_episodes": 100,
+            "instruction": "Insert the HDMI cable into the port."
+        },
+        "pull_out_key": {
+            "num_episodes": 100,
+            "instruction": "Pull the key out of the lock."
+        },
+        "put_bottle_in_shelf": {
+            "num_episodes": 100,
+            "instruction": "Place the bottle on the shelf."
+        },
+        "grasp_classify": {
+            "num_episodes": 20,
+            "instruction": "Grasp the object and classify its texture."
+        }
+    },
+    "data_root": "/data1/zjb/data/UniVTAC",
+    "output_root": "/data1/zjb/data_lerobot_openpi_multitask",
+    "subsample": 1,
+    "model_type": "vision_only",
+    "target_image_size": [224, 224],
+    "fps": 60
+}

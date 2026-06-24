@@ -159,6 +159,44 @@ class Pi0DFConfig(_model.BaseModelConfig):
     #                   the inference "blockwise" pyramid family. Aligns train/inference
     #                   distributions and avoids the unseen "mostly-clean tail" states.
     block_time_sampling: str = "independent"
+    # Exponent for inverse-frequency loss reweighting under monotone schedule:
+    #   w_k = (num_blocks / (k + 1)) ^ reweight_gamma,  normalised so mean=1.
+    #
+    # Controls the strength of per-block loss reweighting:
+    #   gamma = 0.0  →  no reweighting (all blocks equal weight)
+    #   gamma = 0.5  →  moderate (block 0/9 ratio ≈ 3.2:1)
+    #   gamma = 1.0  →  full inverse-frequency (block 0/9 ratio = 10:1)
+    #   gamma > 1.0  →  aggressive (even more weight on early blocks)
+    #
+    # Motivation: under monotone schedule, block k receives gradients only
+    # (k+1)/num_blocks fraction of training steps.  Block 0 gets 10x fewer
+    # gradients than block 9, causing undertrained first-block quality at
+    # inference.  gamma=1.0 fully compensates; gamma<1.0 partially compensates.
+    #
+    # Has no effect when block_time_sampling=="independent" (already balanced).
+    reweight_gamma: float = 1.0
+    # Alpha parameter for the Beta(alpha, 1) distribution used to sample the
+    # monotone progress scalar `phase` during training.
+    #
+    # Background: under monotone sampling, `phase ~ Uniform(0,1)` causes block k
+    # to receive gradients only (k+1)/num_blocks of the time.  Block 0 is noisy
+    # only when phase < 1/num_blocks, and its t values are then Uniform(0,1).
+    # However, with num_steps=50 inference, block 0 uses t ∈ [0.2, 1.0], so a
+    # large fraction of the training budget for block 0 already covers the
+    # inference regime even with uniform phase.
+    #
+    # Beta(alpha, 1) has PDF ∝ phase^(alpha-1), skewing phase toward 0 (high t):
+    #   alpha = 1.0  →  Uniform(0,1)  [no change; default for backward compat]
+    #   alpha = 0.7  →  mild skew; block 0 gradient freq: 10% → 20%
+    #   alpha = 0.5  →  moderate; block 0 gradient freq: 10% → 32%  (recommended)
+    #   alpha = 0.3  →  strong;   block 0 gradient freq: 10% → 50%
+    #
+    # Effect with num_steps=50 inference:
+    #   alpha=1.0 (uniform): block 0 effective coverage ≈  8%
+    #   alpha=0.5:           block 0 effective coverage ≈ 28%  (3.5x improvement)
+    #
+    # Only affects block_time_sampling=="monotone"; ignored for "independent".
+    phase_alpha: float = 1.0
 
     # ── Tactile injection (optional) ───────────────────────────────────────────
     # When enabled, a tactile encoder maps left/right rgb_marker images into

@@ -101,8 +101,8 @@ freeze:
   sparsh_freeze_backbone: false  # Sparsh ViT backbone（pool+proj 始终可训）
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
-batch_size: 256      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
-steps: 15000
+batch_size: 192      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+steps: 10000
 lr: 8e-5
 warmup_steps: 1000
 save_freq: 2000    # 每隔多少步保存一次 checkpoint
@@ -126,7 +126,7 @@ keep_period: 5000
 
 # ─── FSDP ─────────────────────────────────────────────────────────────────────
 # 单 GPU 设为 1；多任务多 GPU 推荐设为 GPU 数量（须为 2 的幂次：1/2/4/8）
-fsdp_devices: 4
+fsdp_devices: 1
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
 output_dir: "/data/zjb/ckpts/pi05_df_sparsh_lift_can"

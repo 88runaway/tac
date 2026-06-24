@@ -7,7 +7,7 @@ video channels.  During DF training the data loader uses ``delta_timestamps`` to
 load tactile frames at block-boundary times so the model can select the correct
 frame based on the monotone progress scalar ``p``.
 
-Data source: /data1/zjb/ckpt/UniVTAC/<task>/clean/*.hdf5
+Data source: /data/zjb/data/UniVTAC/<task>/clean/*.hdf5
 
 HDF5 layout (per episode):
   embodiment/joint                       (T, 9)   float32
@@ -20,25 +20,28 @@ Output features:
   observation.state          (8,)       float32
   action                     (8,)       float32
   observation.images.head    (224,224,3) video
-  observation.images.tactile_left   (224,224,3) video   ← NEW
-  observation.images.tactile_right  (224,224,3) video   ← NEW
+  observation.images.wrist   (224,224,3) video   (仅 camera_type=="all" 任务)
+  observation.images.tactile_left   (224,224,3) image
+  observation.images.tactile_right  (224,224,3) image
 
-The tactile channels store **every subsampled frame** as video.  At training time
-the data loader retrieves only the block-boundary frames via ``delta_timestamps``:
-
-    delta_timestamps["observation.images.tactile_left"]  = [b * block_size / fps for b in range(num_blocks)]
-    delta_timestamps["observation.images.tactile_right"] = [b * block_size / fps for b in range(num_blocks)]
+相机配置（has_wrist）从 task_settings.json 的 camera_type 字段读取：
+  "all"  → head + wrist 双摄像头
+  "head" → 仅 head 单摄像头
 
 Usage:
     conda activate openpi
 
-    # Single task
+    # 单任务（按任务名）
     python policy/Pi05_openpi_DF/convert_df_tactile.py --task insert_HDMI
 
-    # All tasks
+    # 多任务（按 multitask_config.json，自动读取 num_episodes 和 instruction）
+    python policy/Pi05_openpi_DF/convert_df_tactile.py \\
+        --multitask_config policy/Pi05_openpi_DF/multitask_config.json
+
+    # 全部任务（不限数量）
     python policy/Pi05_openpi_DF/convert_df_tactile.py --task all
 
-    # With subsampling
+    # 带时序下采样
     python policy/Pi05_openpi_DF/convert_df_tactile.py --task all --subsample 4
 """
 
@@ -78,11 +81,34 @@ TASK_INSTRUCTIONS = {
 }
 
 ALL_TASKS = list(TASK_INSTRUCTIONS.keys())
-DUAL_CAMERA_TASKS = {"lift_can", "insert_tube"}
 
 TARGET_H, TARGET_W = 224, 224
 JOINT_DIM = 8
 BASE_FPS = 60
+
+
+def _load_task_settings() -> dict:
+    """Load task_settings.json; return empty dict on failure."""
+    if TASK_SETTINGS_PATH.exists():
+        with open(TASK_SETTINGS_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+def _has_wrist(task_name: str, task_settings: dict) -> bool:
+    """Return True if task uses head + wrist dual cameras (camera_type == 'all')."""
+    ts = task_settings.get(task_name, {})
+    return ts.get("camera_type", "head") == "all"
+
+
+def _load_multitask_config(path: str) -> dict:
+    """Load multitask_config.json and return tasks dict keyed by task name.
+
+    Each value has at minimum: num_episodes (int), instruction (str).
+    """
+    with open(path) as f:
+        cfg = json.load(f)
+    return cfg  # full config dict
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -163,7 +189,24 @@ def convert_task(
     subsample: int = 1,
     overwrite: bool = False,
     max_episodes: int | None = None,
+    has_wrist: bool | None = None,
+    instruction: str | None = None,
+    task_settings: dict | None = None,
 ) -> bool:
+    """Convert a single task from HDF5 to LeRobot format with tactile.
+
+    Args:
+        task_name:    Task name string.
+        output_root:  Root output directory; task written to output_root/task_name.
+        subsample:    Temporal subsampling factor (1 = full FPS).
+        overwrite:    Remove and recreate existing output directory.
+        max_episodes: Limit number of episodes to convert (None = all).
+        has_wrist:    Override whether wrist camera is present. If None, inferred
+                      from task_settings (camera_type == "all") or falls back to
+                      checking the HDF5 file.
+        instruction:  Task instruction string. If None, uses TASK_INSTRUCTIONS dict.
+        task_settings: Loaded task_settings.json dict (passed through from caller).
+    """
     files = list_hdf5_files(task_name)
     if not files:
         print(f"[{task_name}] No HDF5 files found in {DATA_ROOT / task_name / 'clean'}, skipping.")
@@ -181,8 +224,15 @@ def convert_task(
             print(f"[{task_name}] Already exists at {out_dir} (use --overwrite to recreate)")
             return True
 
-    has_wrist = task_name in DUAL_CAMERA_TASKS
-    instruction = TASK_INSTRUCTIONS.get(task_name, task_name.replace("_", " "))
+    # Resolve has_wrist: explicit arg > task_settings.json > hdf5 probe
+    if has_wrist is None:
+        if task_settings is not None:
+            has_wrist = _has_wrist(task_name, task_settings)
+        else:
+            with h5py.File(files[0], "r") as _f:
+                has_wrist = "observation/wrist/rgb" in _f
+
+    instruction = instruction or TASK_INSTRUCTIONS.get(task_name, task_name.replace("_", " "))
     features = build_features(has_wrist)
     fps = BASE_FPS // subsample if subsample > 1 else BASE_FPS
 
@@ -280,37 +330,88 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--task", nargs="+", required=True,
-                        help=f"Task name(s) or 'all'. Available: {ALL_TASKS}")
-    parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_ROOT))
+    # ── 任务来源：二选一 ───────────────────────────────────────────────────────
+    grp = parser.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--task", nargs="+",
+                     help=f"Task name(s) or 'all'. Available: {ALL_TASKS}")
+    grp.add_argument("--multitask_config", type=str, metavar="JSON",
+                     help=(
+                         "Path to multitask_config.json. 自动读取 tasks 列表、"
+                         "每个任务的 num_episodes 和 instruction；"
+                         "相机配置仍从 task_settings.json 读取。"
+                     ))
+
+    parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_ROOT),
+                        help=f"输出根目录（默认 {DEFAULT_OUTPUT_ROOT}）")
     parser.add_argument("--subsample", type=int, default=1,
-                        help="Temporal subsampling factor (default: 1 = full 60fps)")
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--max_episodes", type=int, default=None)
+                        help="时序下采样倍率（default: 1 = 完整 60fps）")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="覆盖已有输出目录")
+    parser.add_argument("--max_episodes", type=int, default=None,
+                        help="（--task 模式）每个任务最多转换的 episode 数量；"
+                             "--multitask_config 模式下由 JSON 中 num_episodes 控制")
 
     args = parser.parse_args()
     output_root = Path(args.output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    tasks = ALL_TASKS if args.task == ["all"] else args.task
+    # ── 加载 task_settings.json（获取相机类型）────────────────────────────────
+    task_settings = _load_task_settings()
+    if not task_settings:
+        print(f"WARNING: task_settings.json not found at {TASK_SETTINGS_PATH}, "
+              "will probe HDF5 for wrist camera availability.")
+
+    # ── 构建任务列表 ──────────────────────────────────────────────────────────
+    # Each entry: (task_name, max_episodes_for_task, instruction_override)
+    task_list: list[tuple[str, int | None, str | None]] = []
+
+    if args.multitask_config:
+        mt = _load_multitask_config(args.multitask_config)
+        tasks_cfg = mt.get("tasks", {})
+        for task_name, task_cfg in tasks_cfg.items():
+            n_eps = task_cfg.get("num_episodes", None)
+            instr = task_cfg.get("instruction", None)
+            task_list.append((task_name, n_eps, instr))
+        print(f"\n[multitask_config] Loaded {len(task_list)} tasks from {args.multitask_config}")
+    else:
+        tasks = ALL_TASKS if args.task == ["all"] else args.task
+        for t in tasks:
+            task_list.append((t, args.max_episodes, None))
 
     print(f"\n{'#'*60}")
     print(f" UniVTAC DF-Tactile Data Conversion")
-    print(f" Tasks: {tasks}")
-    print(f" Subsample: {args.subsample}x (FPS: {BASE_FPS} → {BASE_FPS // args.subsample})")
-    print(f" Output: {output_root}")
+    print(f" Mode:      {'multitask_config' if args.multitask_config else '--task'}")
+    print(f" Tasks:     {[t for t, _, _ in task_list]}")
+    print(f" Subsample: {args.subsample}x  (FPS: {BASE_FPS} → {BASE_FPS // args.subsample})")
+    print(f" Output:    {output_root}")
     print(f"{'#'*60}\n")
+    print(f"  {'Task':<22} {'Episodes':>9}  {'Cameras'}")
+    print(f"  {'-'*22} {'-'*9}  {'-'*20}")
+    for task_name, n_eps, _ in task_list:
+        hw = _has_wrist(task_name, task_settings) if task_settings else "?"
+        cams = "head + wrist" if hw is True else ("head only" if hw is False else "auto-detect")
+        print(f"  {task_name:<22} {str(n_eps) if n_eps else 'all':>9}  {cams}")
+    print()
 
     ok = 0
-    for task in tasks:
-        if task not in TASK_INSTRUCTIONS:
-            print(f"WARNING: Unknown task '{task}'. Available: {ALL_TASKS}")
+    for task_name, n_eps, instr in task_list:
+        if task_name not in TASK_INSTRUCTIONS and instr is None:
+            print(f"WARNING: Unknown task '{task_name}' and no instruction in config — skipping.")
             continue
-        if convert_task(task, output_root, args.subsample, args.overwrite, args.max_episodes):
+        if convert_task(
+            task_name,
+            output_root,
+            subsample=args.subsample,
+            overwrite=args.overwrite,
+            max_episodes=n_eps,
+            has_wrist=None,           # 从 task_settings.json 动态读取
+            instruction=instr,
+            task_settings=task_settings,
+        ):
             ok += 1
 
     print(f"\n{'='*60}")
-    print(f" Conversion complete: {ok}/{len(tasks)} tasks successful")
+    print(f" Conversion complete: {ok}/{len(task_list)} tasks successful")
     print(f"{'='*60}")
 
 

@@ -145,6 +145,8 @@ class Pi0DF(_model.BaseModel):
         assert self.block_time_sampling in ("independent", "monotone"), (
             f"block_time_sampling must be 'independent' or 'monotone', got {self.block_time_sampling!r}"
         )
+        self.reweight_gamma = config.reweight_gamma
+        self.phase_alpha = config.phase_alpha
 
         # ── Tactile encoder (optional) ────────────────────────────────────────────
         self.use_tactile = config.use_tactile
@@ -708,7 +710,14 @@ class Pi0DF(_model.BaseModel):
         time_const = jnp.broadcast_to(time_scalar, (b, ah))  # (b, ah)
 
         # block-wise diffusion forcing time
-        phase = jax.random.uniform(phase_rng, (b, 1))
+        # phase ~ Beta(phase_alpha, 1) when phase_alpha != 1.0, else Uniform.
+        # Beta(alpha, 1) skews phase toward 0 (high-noise regime), increasing
+        # the effective training coverage for early blocks (especially block 0)
+        # that are only noisy when phase is small.
+        if self.block_time_sampling == "monotone" and self.phase_alpha != 1.0:
+            phase = jax.random.beta(phase_rng, self.phase_alpha, 1.0, (b, 1))
+        else:
+            phase = jax.random.uniform(phase_rng, (b, 1))
         if self.block_time_sampling == "monotone":
             k = jnp.arange(self.num_blocks)[None, :]
             t_blocks = jnp.clip(1.0 - phase * self.num_blocks / (k + 1), 0.0, 1.0)
@@ -780,7 +789,23 @@ class Pi0DF(_model.BaseModel):
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon:])
         per_token_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)  # (b, ah)
         active_mask = (time > 5e-4).astype(per_token_loss.dtype)  # (b, ah)
-        action_loss = per_token_loss * active_mask
+
+        # Per-block inverse-frequency loss reweighting for monotone schedule.
+        #
+        # Under monotone sampling, block k is noisy (and thus receives gradient)
+        # only (k+1)/num_blocks of the time.  Block 0 contributes 10x fewer
+        # gradients than block 9.  Inverse-frequency weights compensate:
+        #   w_k = (num_blocks / (k+1)) ^ gamma,  normalised to mean=1.
+        # gamma=1.0 fully balances; gamma<1.0 partially; gamma=0.0 disables.
+        if self.block_time_sampling == "monotone" and self.reweight_gamma > 0:
+            k_idx = jnp.arange(self.num_blocks, dtype=jnp.float32)    # (nb,)
+            block_w = (self.num_blocks / (k_idx + 1.0)) ** self.reweight_gamma
+            block_w = block_w / block_w.mean()                        # normalise: mean=1
+            token_w = jnp.repeat(block_w, self.block_size)[None, :]   # (1, ah)
+            action_loss = per_token_loss * active_mask * token_w
+        else:
+            action_loss = per_token_loss * active_mask
+
         action_loss_scalar = jnp.mean(action_loss)  # pure action loss for logging
 
         # ── Tactile expert velocity loss ──────────────────────────────────────
