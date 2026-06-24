@@ -141,8 +141,8 @@ freeze:
   sparsh_freeze_backbone: false  # Sparsh ViT backbone（pool+proj 始终可训）
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
-batch_size: 192      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
-steps: 20000
+batch_size: 256      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
+steps: 30000
 lr: 8e-5
 warmup_steps: 1000
 save_freq: 2000    # 每隔多少步保存一次 checkpoint
@@ -169,12 +169,12 @@ keep_period: 5000
 fsdp_devices: 1
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
-output_dir: "/data/zjb/ckpts/pi05_df_reweight_lift_can"
+output_dir: "/data/zjb/ckpts/pi05_df_reweight_all"
 
 # ─── WandB ────────────────────────────────────────────────────────────────────
 # 仅记录训练损失等标量，不上传模型参数或 artifact
 wandb: true
-wandb_project: "univtac-pi05-df-lift-can"
+wandb_project: "univtac-pi05-df-reweight-all"
 
 # ─── AdamW Optimizer ─────────────────────────────────────────────────────────
 # optimizer:

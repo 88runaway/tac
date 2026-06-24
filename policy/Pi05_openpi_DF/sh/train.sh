@@ -2,6 +2,10 @@ cd /data1/zjb/UniVTAC
 unset PYTHONPATH  # prevent IsaacLab env from polluting openpi numpy path
 conda activate openpi
 
+python policy/Pi05_openpi_DF/train_df.py --task all --gpu 0,1,2,3 \
+    --train_config /data/zjb/UniVTAC/policy/Pi05_openpi_DF/config/train_df.yaml \
+    --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
+
 python policy/Pi05_openpi_DF/convert_df_tactile.py \
     --multitask_config policy/Pi05_openpi_DF/multitask_config.json \
     --output_dir /data/zjb/data/UniVTAC/tac_all \
@@ -25,14 +29,11 @@ python policy/Pi05_openpi_DF/train_df.py \
 python policy/Pi05_openpi_DF/convert_df_tactile.py --task lift_can
 
 # 2. 训练（仅启用触觉 condition，Sparsh DINO 编码器，不使用 tactile expert）
-python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 4,5,6,7 \
+python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 0,1,2,3 \
     --use_tactile true --block_time_sampling monotone --mix_prob 1.0 \
-    --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
+     --resume
 
 
-python policy/Pi05_openpi_DF/train_df.py --task all --gpu 2,3,4,5,6,7 \
-    --train_config /data/zjb/UniVTAC/policy/Pi05_openpi_DF/config/train_df.yaml \
-    --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
 
 # 2. 训练（仅启用触觉 condition）
 python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 3,4,5,6 \

@@ -16,17 +16,17 @@ HDF5 layout (per episode):
   tactile/left_gsmini/rgb_marker         (T,)     |S*  JPEG
   tactile/right_gsmini/rgb_marker        (T,)     |S*  JPEG
 
-Output features:
+Output features (统一 schema，所有任务相同):
   observation.state          (8,)       float32
   action                     (8,)       float32
   observation.images.head    (224,224,3) video
-  observation.images.wrist   (224,224,3) video   (仅 camera_type=="all" 任务)
+  observation.images.wrist   (224,224,3) video   (无腕摄任务填充全零黑图，保证多任务 schema 一致)
   observation.images.tactile_left   (224,224,3) image
   observation.images.tactile_right  (224,224,3) image
 
 相机配置（has_wrist）从 task_settings.json 的 camera_type 字段读取：
-  "all"  → head + wrist 双摄像头
-  "head" → 仅 head 单摄像头
+  "all"  → head + wrist 双摄像头，wrist 使用真实图像
+  "head" → 仅 head 单摄像头，wrist 填充全零黑图
 
 Usage:
     conda activate openpi
@@ -139,7 +139,14 @@ def list_hdf5_files(task_name: str) -> list[Path]:
 
 # ─── Feature schema ──────────────────────────────────────────────────────────
 
-def build_features(has_wrist: bool) -> dict:
+def build_features() -> dict:
+    """Build unified feature schema for ALL tasks.
+
+    All tasks share the same schema regardless of camera configuration:
+      - observation.images.wrist is always present (black image for tasks
+        without a physical wrist camera, so ConcatDataset stays consistent).
+      - tactile_left / tactile_right are always present.
+    """
     features = {
         "observation.state": {
             "dtype": "float32",
@@ -162,16 +169,14 @@ def build_features(has_wrist: bool) -> dict:
             "shape": (TARGET_H, TARGET_W, 3),
             "names": ["height", "width", "channel"],
         },
-    }
-    if has_wrist:
-        features["observation.images.wrist"] = {
+        # Always include wrist; tasks without physical wrist get black images.
+        "observation.images.wrist": {
             "dtype": "video",
             "shape": (TARGET_H, TARGET_W, 3),
             "names": ["height", "width", "channel"],
-        }
+        },
+    }
     # Store tactile as image (not video) to avoid per-step video decoding cost.
-    # LeRobot writes each frame as a PNG file; delta_timestamps still works via
-    # frame-index lookup (no video codec involved).
     for side in ("tactile_left", "tactile_right"):
         features[f"observation.images.{side}"] = {
             "dtype": "image",
@@ -179,6 +184,9 @@ def build_features(has_wrist: bool) -> dict:
             "names": ["height", "width", "channel"],
         }
     return features
+
+
+BLACK_IMG = np.zeros((TARGET_H, TARGET_W, 3), dtype=np.uint8)
 
 
 # ─── Core conversion ─────────────────────────────────────────────────────────
@@ -233,7 +241,9 @@ def convert_task(
                 has_wrist = "observation/wrist/rgb" in _f
 
     instruction = instruction or TASK_INSTRUCTIONS.get(task_name, task_name.replace("_", " "))
-    features = build_features(has_wrist)
+
+    # All tasks use unified schema; wrist is always stored (black image if no physical camera).
+    features = build_features()
     fps = BASE_FPS // subsample if subsample > 1 else BASE_FPS
 
     # Verify tactile availability
@@ -249,7 +259,7 @@ def convert_task(
     print(f"{'='*60}")
     print(f"  Episodes:      {len(files)}")
     print(f"  FPS:           {BASE_FPS} → {fps} (subsample={subsample})")
-    print(f"  Has wrist cam: {has_wrist}")
+    print(f"  Has wrist cam: {has_wrist} (False → wrist filled with black image)")
     print(f"  Instruction:   \"{instruction}\"")
     print(f"  Output:        {out_dir}")
 
@@ -298,16 +308,17 @@ def convert_task(
             state[7] = float(joint_all[t, 7:9].mean())
             action[7] = float(joint_all[t_next, 7:9].mean())
 
+            # Unified schema: always include wrist; use black image when task has no wrist camera.
+            wrist_img = wrist_imgs[t] if (has_wrist and wrist_imgs is not None) else BLACK_IMG
             frame = {
                 "observation.state": state,
                 "action": action,
                 "observation.images.head": head_imgs[t],
+                "observation.images.wrist": wrist_img,
                 "observation.images.tactile_left": tac_left_imgs[t],
                 "observation.images.tactile_right": tac_right_imgs[t],
                 "task": instruction,
             }
-            if has_wrist and wrist_imgs is not None:
-                frame["observation.images.wrist"] = wrist_imgs[t]
 
             dataset.add_frame(frame)
 

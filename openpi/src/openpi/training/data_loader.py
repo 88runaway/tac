@@ -320,6 +320,75 @@ class TactilePreloadedDataset(Dataset):
         return item
 
 
+def _is_multitask_root(root: str | Path | None) -> list[Path]:
+    """Return sorted list of per-task sub-dataset dirs if root is a multitask root.
+
+    A multitask root has NO meta/info.json at the top level but contains
+    subdirectories that each have their own meta/info.json (individual lerobot
+    datasets).  Returns an empty list if root is a normal single dataset.
+    """
+    if root is None:
+        return []
+    root = Path(root)
+    if (root / "meta" / "info.json").exists():
+        return []  # normal single dataset
+    task_dirs = sorted(
+        d for d in root.iterdir()
+        if d.is_dir() and (d / "meta" / "info.json").exists()
+    )
+    return task_dirs
+
+
+def _create_single_lerobot_dataset(
+    repo_id: str,
+    root: str | Path,
+    delta_ts: dict,
+    extra_delta_timestamps: dict | None,
+    prompt_from_task: bool,
+) -> Dataset:
+    """Create one lerobot dataset (with optional TactilePreloadedDataset wrapper)."""
+    root = Path(root)
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=str(root))
+
+    full_delta_ts = dict(delta_ts)
+    if extra_delta_timestamps:
+        full_delta_ts.update(extra_delta_timestamps)
+
+    # Detect tactile multi-frame keys
+    tactile_preload_keys = []
+    tactile_frame_offsets_map: dict[str, list[int]] = {}
+    if extra_delta_timestamps:
+        fps = dataset_meta.fps
+        for k, dts in extra_delta_timestamps.items():
+            if len(dts) > 1 and "tactile" in k:
+                tactile_preload_keys.append(k)
+                tactile_frame_offsets_map[k] = [round(dt * fps) for dt in dts]
+
+    if tactile_preload_keys:
+        base_delta_ts = {k: v for k, v in full_delta_ts.items() if k not in tactile_preload_keys}
+        base_dataset = lerobot_dataset.LeRobotDataset(
+            repo_id, root=str(root), delta_timestamps=base_delta_ts, video_backend="pyav",
+        )
+        if prompt_from_task:
+            base_dataset = TransformedDataset(
+                base_dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)]
+            )
+        frame_offsets = tactile_frame_offsets_map[tactile_preload_keys[0]]
+        return TactilePreloadedDataset(
+            base_dataset,
+            dataset_dir=str(root),
+            tactile_keys=tactile_preload_keys,
+            frame_offsets=frame_offsets,
+        )
+
+    dataset = lerobot_dataset.LeRobotDataset(
+        repo_id, root=str(root), delta_timestamps=full_delta_ts, video_backend="pyav",
+    )
+    if prompt_from_task:
+        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    return dataset
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -331,6 +400,40 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     root = getattr(data_config, "root", None)
+
+    # ── Multi-task root detection ─────────────────────────────────────────────
+    # If root contains per-task subdirectories (each with meta/info.json) but
+    # has no meta/info.json itself, load each task separately and concatenate.
+    task_dirs = _is_multitask_root(root)
+    if task_dirs:
+        base_delta_ts = {
+            key: [t / 60 for t in range(action_horizon)]  # placeholder fps; overridden per task
+            for key in data_config.action_sequence_keys
+        }
+        sub_datasets = []
+        for task_dir in task_dirs:
+            task_repo_id = f"{repo_id.rsplit('/', 1)[0]}/{task_dir.name}"
+            logging.info(f"[multitask] Loading sub-dataset: {task_dir.name}  ({task_dir})")
+            # Compute proper delta_ts from this task's actual fps
+            task_meta = lerobot_dataset.LeRobotDatasetMetadata(task_repo_id, root=str(task_dir))
+            task_delta_ts = {
+                key: [t / task_meta.fps for t in range(action_horizon)]
+                for key in data_config.action_sequence_keys
+            }
+            sub_ds = _create_single_lerobot_dataset(
+                repo_id=task_repo_id,
+                root=task_dir,
+                delta_ts=task_delta_ts,
+                extra_delta_timestamps=data_config.extra_delta_timestamps,
+                prompt_from_task=data_config.prompt_from_task,
+            )
+            sub_datasets.append(sub_ds)
+        logging.info(
+            f"[multitask] Concatenated {len(sub_datasets)} task datasets "
+            f"({sum(len(d) for d in sub_datasets)} samples total)"
+        )
+        return torch.utils.data.ConcatDataset(sub_datasets)
+
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=root)
     delta_ts = {
         key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
