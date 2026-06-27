@@ -121,6 +121,10 @@ class _ResLayer(nnx.Module):
 class TactileResNetEncoder(nnx.Module):
     """ResNet-18 backbone that maps a tactile image to spatial tokens.
 
+    Positional encodings (spatial + finger identity) match those of
+    ``SparshTactileEncoder`` so both encoders produce tokens in the same
+    embedding space convention.
+
     Parameters
     ----------
     output_dim : int
@@ -130,9 +134,17 @@ class TactileResNetEncoder(nnx.Module):
         Number of spatial tokens per image.  Default 16 (4×4 grid).
     """
 
-    def __init__(self, output_dim: int, num_tokens: int = 16, *, rngs: nnx.Rngs):
+    def __init__(
+        self,
+        output_dim: int,
+        num_tokens: int = 16,
+        use_pos_emb: bool = True,
+        *,
+        rngs: nnx.Rngs,
+    ):
         self.output_dim = output_dim
         self.num_tokens = num_tokens
+        self.use_pos_emb = use_pos_emb
         self._grid_h = self._grid_w = int(num_tokens ** 0.5)
         assert self._grid_h * self._grid_w == num_tokens
 
@@ -152,18 +164,26 @@ class TactileResNetEncoder(nnx.Module):
         # Project 512-d spatial features → output_dim
         self.proj = nnx.Linear(512, output_dim, rngs=rngs)
 
+        # Learned positional encodings (same convention as SparshTactileEncoder).
+        # Only created when use_pos_emb=True; omitted entirely when False (ablation).
+        if use_pos_emb:
+            self.spatial_emb = nnx.Param(jnp.zeros((num_tokens, output_dim)))
+            self.finger_emb  = nnx.Param(jnp.zeros((2, output_dim)))
+
     @at.typecheck
     def __call__(
         self,
         x: at.Float[at.Array, "b h w 3"],
+        finger_idx: int = 0,
         *,
         train: bool = False,
     ) -> at.Float[at.Array, "b n d"]:
         """Encode a batch of tactile images into spatial tokens.
 
         Args:
-            x: ``(B, H, W, 3)``  float32 images in ``[0, 1]``.
-            train: Unused (kept for API parity); GroupNorm has no train/eval modes.
+            x:          ``(B, H, W, 3)`` float32 images in ``[0, 1]``.
+            finger_idx: 0 = left finger, 1 = right finger.
+            train:      Unused (GroupNorm has no train/eval modes; kept for API parity).
 
         Returns:
             ``(B, num_tokens, output_dim)`` token embeddings.
@@ -191,7 +211,14 @@ class TactileResNetEncoder(nnx.Module):
         b, h, w, c = x.shape
         x = jax.image.resize(x, (b, self._grid_h, self._grid_w, c), method="linear")
 
-        # Flatten spatial → tokens
+        # Flatten spatial → tokens, then project
         x = x.reshape(b, self.num_tokens, c)   # (B, 16, 512)
-        x = self.proj(x)                       # (B, 16, output_dim)
-        return x
+        tokens = self.proj(x)                  # (B, 16, output_dim)
+
+        if self.use_pos_emb:
+            # Spatial position encoding (4×4 grid, row-major)
+            tokens = tokens + self.spatial_emb.value          # (16, D) broadcast over B
+            # Finger identity encoding (left=0 / right=1)
+            tokens = tokens + self.finger_emb.value[finger_idx]  # (D,) broadcast
+
+        return tokens

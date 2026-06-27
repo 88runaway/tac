@@ -348,6 +348,7 @@ class SparshTactileEncoder(nnx.Module):
         num_tokens:  int = 16,
         *,
         use_register_token: bool = False,
+        use_pos_emb: bool = True,
         rngs: nnx.Rngs,
     ):
         assert int(num_tokens ** 0.5) ** 2 == num_tokens, (
@@ -357,6 +358,7 @@ class SparshTactileEncoder(nnx.Module):
         self.output_dim = output_dim
         self.grid = int(num_tokens ** 0.5)   # 4
         self.use_register_token = use_register_token
+        self.use_pos_emb = use_pos_emb
 
         # ViT backbone — pretrained weights loaded via from_pretrained()
         self.backbone = SparshViTSmall(rngs=rngs)
@@ -364,15 +366,13 @@ class SparshTactileEncoder(nnx.Module):
         # Linear projection:  EMBED_DIM → output_dim  (shared for patches and register token)
         self.proj = nnx.Linear(EMBED_DIM, output_dim, use_bias=True, rngs=rngs)
 
-        # Spatial position embedding: one vector per 4×4 grid cell.
-        # Shared between left and right (encodes "where on the sensor").
-        # Zero-init: no initial bias; gradient drives differentiation.
-        self.spatial_emb = nnx.Param(jnp.zeros((num_tokens, output_dim)))
-
-        # Finger identity embedding: left=0, right=1.
-        # Broadcast to all tokens of that finger.
-        # Zero-init: safe starting point, learned from task data.
-        self.finger_emb = nnx.Param(jnp.zeros((2, output_dim)))
+        # Learned positional encodings.  Only created when use_pos_emb=True.
+        if use_pos_emb:
+            # Spatial position embedding: one vector per 4×4 grid cell.
+            # Shared between left and right (encodes "where on the sensor").
+            self.spatial_emb = nnx.Param(jnp.zeros((num_tokens, output_dim)))
+            # Finger identity embedding: left=0, right=1.
+            self.finger_emb = nnx.Param(jnp.zeros((2, output_dim)))
 
         # Register token identity embedding (only allocated when use_register_token=True).
         # Encodes "this is the global summary token, not a spatial patch token".
@@ -406,8 +406,9 @@ class SparshTactileEncoder(nnx.Module):
             reg_token = self.proj(reg_feat)               # (B, 1, output_dim)
             # Global identity: "this is a register/summary token"
             reg_token = reg_token + self.register_token_emb.value  # broadcast (D,)
-            # Finger identity: left vs right (same as spatial tokens)
-            reg_token = reg_token + self.finger_emb.value[finger_idx]
+            # Finger identity encoding on register token (if pos emb is enabled)
+            if self.use_pos_emb:
+                reg_token = reg_token + self.finger_emb.value[finger_idx]
 
         # ── Patch tokens ──────────────────────────────────────────────────────
         patches = vit_out[:, 1:, :]                      # (B, 196, 384)
@@ -424,11 +425,11 @@ class SparshTactileEncoder(nnx.Module):
         # ── Linear projection ────────────────────────────────────────────────
         tokens = self.proj(patches)                      # (B, 16, output_dim)
 
-        # ── Spatial position encoding (4×4 grid, row-major) ─────────────────
-        tokens = tokens + self.spatial_emb.value         # (16, D) broadcast over B
-
-        # ── Finger identity encoding ─────────────────────────────────────────
-        tokens = tokens + self.finger_emb.value[finger_idx]  # (D,) broadcast
+        if self.use_pos_emb:
+            # Spatial position encoding (4×4 grid, row-major)
+            tokens = tokens + self.spatial_emb.value         # (16, D) broadcast over B
+            # Finger identity encoding
+            tokens = tokens + self.finger_emb.value[finger_idx]  # (D,) broadcast
 
         # ── Prepend register token (global summary at index 0) ───────────────
         if self.use_register_token:
@@ -444,30 +445,38 @@ class SparshTactileEncoder(nnx.Module):
         num_tokens: int = 16,
         *,
         use_register_token: bool = False,
+        use_pos_emb: bool = True,
         rngs:  nnx.Rngs,
         dtype: str = "float32",
     ) -> "SparshTactileEncoder":
         """Create encoder with pretrained ViT backbone.
 
-        ``proj``, ``spatial_emb``, ``finger_emb``, and (optionally)
-        ``register_token_emb`` are zero / randomly initialised and must be
-        trained on robot data.
+        ``proj``, and (when use_pos_emb=True) ``spatial_emb`` + ``finger_emb``,
+        and (when use_register_token=True) ``register_token_emb`` are zero-initialised
+        and must be trained on robot data.
 
         Args:
             npz_path:           Path to .npz produced by convert_sparsh_weights.py.
             output_dim:         Action-expert feature width (e.g. 1024 for gemma_300m).
             num_tokens:         Spatial tokens per finger (default 16 = 4×4 grid).
             use_register_token: If True, prepend the ViT register token as an extra
-                                global-summary token per finger (output: num_tokens+1
-                                per finger). Default False.
+                                global-summary token per finger.
+            use_pos_emb:        If True (default), add spatial_emb and finger_emb to
+                                the output tokens.  Set False for ablation.
             rngs:               Flax RNG state.
             dtype:              "float32" or "bfloat16".
         """
-        encoder = cls(output_dim, num_tokens, use_register_token=use_register_token, rngs=rngs)
+        encoder = cls(
+            output_dim, num_tokens,
+            use_register_token=use_register_token,
+            use_pos_emb=use_pos_emb,
+            rngs=rngs,
+        )
         _load_vit_weights(encoder.backbone, npz_path, dtype=dtype)
-        extra = " + register_token_emb" if use_register_token else ""
+        pos_note  = "spatial_emb + finger_emb" if use_pos_emb else "(no pos emb)"
+        extra_note = " + register_token_emb" if use_register_token else ""
         logger.info(
             "[SparshTactileEncoder] backbone loaded; "
-            f"proj + spatial_emb + finger_emb{extra} zero-initialised."
+            f"proj + {pos_note}{extra_note} zero-initialised."
         )
         return encoder

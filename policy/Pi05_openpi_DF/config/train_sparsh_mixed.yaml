@@ -37,7 +37,7 @@ block_time_sampling: monotone
 #   gamma > 1.0  →  激进加权（更大力度补偿早期 block）
 #
 # 仅在 block_time_sampling == monotone 时生效，independent 时自动忽略。
-reweight_gamma: 0.0
+reweight_gamma: 0.5
 
 # phase_alpha: monotone 调度中 phase 的 Beta(alpha, 1) 分布参数
 #
@@ -59,13 +59,13 @@ reweight_gamma: 0.0
 #   reweight_gamma 修复"总梯度量"问题
 #
 # 仅在 block_time_sampling == monotone 时生效，independent 时自动忽略。
-phase_alpha: 1.0
+phase_alpha: 0.7
 
 # ─── Tactile injection (optional) ─────────────────────────────────────────────
 # 启用后，触觉 rgb_marker 图像通过触觉编码器转为 16 token/指（共 32 token）
 # 注入 action expert suffix，由 block 进度标量决定使用哪帧触觉。
 # 需要用 convert_df_tactile.py 转出的带触觉的数据集。
-use_tactile: false
+use_tactile: true
 tactile_tokens_per_finger: 16
 
 # tactile_encoder_type: 选择触觉编码器后端
@@ -76,6 +76,16 @@ tactile_tokens_per_finger: 16
 #               需要先运行:
 #                 python policy/Pi05_openpi_DF/convert_sparsh_weights.py convert
 tactile_encoder_type: "sparsh"
+
+# use_tactile_register_token: 是否将 Sparsh ViT 的 register token 作为额外触觉 token 加入 suffix
+#   仅对 tactile_encoder_type=="sparsh" 有效；resnet 模式下忽略此项。
+#   false (默认) — 丢弃 register token，每指 16 个空间 patch token，共 32 token
+#   true          — 保留 register token（ViT 的全局 DINO 摘要），每指 17 token，共 34 token
+#                   register token 获得独立可学习的 register_token_emb（零初始化）+ finger_emb，
+#                   不分配 spatial_emb（它是全局摘要，无空间位置）。
+#                   token 排布: [reg_L, patch_L×16, reg_R, patch_R×16]
+use_tactile_register_token: true
+
 
 # sparsh_npz_path: Sparsh 预训练权重路径（仅 tactile_encoder_type=="sparsh" 时使用）
 sparsh_npz_path: "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
@@ -111,22 +121,6 @@ tactile_expert_loss_weight: 1.0
 # 通常保持 false；显存极度紧张时才设 true
 tac_expert_local_attn: false
 
-# use_tactile_register_token: 是否将 Sparsh ViT 的 register token 作为额外触觉 token 加入 suffix
-#   仅对 tactile_encoder_type=="sparsh" 有效；resnet 模式下忽略此项。
-#   false (默认) — 丢弃 register token，每指 16 个空间 patch token，共 32 token
-#   true          — 保留 register token（ViT 的全局 DINO 摘要），每指 17 token，共 34 token
-#                   register token 获得独立可学习的 register_token_emb（零初始化）+ finger_emb，
-#                   不分配 spatial_emb（它是全局摘要，无空间位置）。
-#                   token 排布: [reg_L, patch_L×16, reg_R, patch_R×16]
-use_tactile_register_token: false
-
-# tactile_use_pos_emb: 是否对触觉 token 添加可学习位置编码
-#   spatial_emb — 每个 token 对应 4×4 网格中的一个位置（num_tokens × D），零初始化
-#   finger_emb  — 区分左/右手指（2 × D），零初始化
-#   两种编码器（resnet 和 sparsh）均支持此参数。
-#   true（默认）— 添加位置编码；false — 不添加（消融实验）
-# ⚠ 架构参数，随 checkpoint 保存，评估时自动继承。
-tactile_use_pos_emb: true
 
 # tactile_attend_prefix: 控制 suffix 中当前触觉 token 是否可以 attend prefix（图像/语言条件）
 #   true  (默认) — 触觉 token 通过 make_attn_mask 的 causal cumsum 自然 attend 所有 prefix，
@@ -134,7 +128,7 @@ tactile_use_pos_emb: true
 #   false         — 触觉 token 被 mask 掉对 prefix 的 attention，只能 self-attend 及与
 #                  action token 互相 attend，使触觉流与图像/语言条件完全解耦，
 #                  适合消融实验或测试触觉信息单独的贡献。
-tactile_attend_prefix: true
+tactile_attend_prefix: false
 
 # ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
 # true = 冻结该模块（不训练），false = 参与训练。默认全 false（全量微调）。
@@ -150,10 +144,10 @@ freeze:
 
 # ─── 训练超参 ─────────────────────────────────────────────────────────────────
 batch_size: 256      # 单任务默认；多任务建议改为 128（或通过 CLI 覆盖）
-steps: 10000
+steps: 5000
 lr: 8e-5
-warmup_steps: 1000
-save_freq: 2000    # 每隔多少步保存一次 checkpoint
+warmup_steps: 500
+save_freq: 1000    # 每隔多少步保存一次 checkpoint
 log_freq: 50
 # 每个 DataLoader worker 进程数。触觉数据集每样本包含 num_blocks 帧触觉图，
 # 建议设为 8~12（取决于 CPU 核数），以保证 GPU 不等 CPU。
@@ -170,19 +164,19 @@ seed: 42
 # keep_period: 额外永久保留满足 step % keep_period == 0 的里程碑 ckpt。
 #   null  → 只保留最新 1 个（最省磁盘，推荐）
 #   5000  → 额外保留 step 5000/10000/... 的 ckpt
-keep_period: 5000
+keep_period: 2500
 
 # ─── FSDP ─────────────────────────────────────────────────────────────────────
 # 单 GPU 设为 1；多任务多 GPU 推荐设为 GPU 数量（须为 2 的幂次：1/2/4/8）
 fsdp_devices: 1
 
 # ─── 输出目录 ─────────────────────────────────────────────────────────────────
-output_dir: "/data/zjb/ckpts/pi05_df_lift_can"
+output_dir: "/data/zjb/ckpts/pi05_sparsh_mixed"
 
 # ─── WandB ────────────────────────────────────────────────────────────────────
 # 仅记录训练损失等标量，不上传模型参数或 artifact
 wandb: true
-wandb_project: "univtac-pi05-df-lift-can"
+wandb_project: "univtac-pi05-sparsh-mixed"
 
 # ─── AdamW Optimizer ─────────────────────────────────────────────────────────
 # optimizer:

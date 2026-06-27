@@ -234,6 +234,18 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # register_token_emb (zero-init, D-dim) is added to distinguish it from spatial tokens.
     use_tactile_register_token: bool = False
 
+    # When True, both tactile encoders (resnet and sparsh) add learned positional
+    # encodings to the output tokens:
+    #   spatial_emb  — one vector per grid cell (num_tokens × D), row-major 4×4 grid.
+    #                  Lets the model distinguish the spatial location of each patch.
+    #   finger_emb   — one vector per finger (2 × D, index 0=left, 1=right).
+    #                  Lets the model distinguish which hand the token belongs to.
+    #
+    # Setting False removes both parameter blocks from the model, useful for ablation.
+    # This is a model-architecture choice saved with the checkpoint; it CANNOT be
+    # changed at evaluation time without retraining.
+    tactile_use_pos_emb: bool = True
+
     # ── Tactile expert (future tactile prediction via flow matching) ────────────
     # When enabled, adds an INDEPENDENT Transformer (third expert) that denoises
     # future tactile latent tokens alongside the action tokens. Both experts have

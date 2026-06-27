@@ -157,12 +157,14 @@ class Pi0DF(_model.BaseModel):
                 config.tactile_encoder_type == "sparsh"
                 and getattr(config, "use_tactile_register_token", False)
             )
+            _use_pos_emb = getattr(config, "tactile_use_pos_emb", True)
             if config.tactile_encoder_type == "sparsh":
                 self.tactile_encoder = _sparsh_enc.SparshTactileEncoder.from_pretrained(
                     npz_path=config.sparsh_npz_path,
                     output_dim=action_expert_config.width,
                     num_tokens=self.tactile_tokens_per_finger,
                     use_register_token=_use_reg_tok,
+                    use_pos_emb=_use_pos_emb,
                     rngs=rngs,
                 )
                 if config.sparsh_freeze_backbone:
@@ -174,6 +176,7 @@ class Pi0DF(_model.BaseModel):
                 self.tactile_encoder = _tactile_enc.TactileResNetEncoder(
                     output_dim=action_expert_config.width,
                     num_tokens=self.tactile_tokens_per_finger,
+                    use_pos_emb=_use_pos_emb,
                     rngs=rngs,
                 )
             # Each finger outputs (tactile_tokens_per_finger + 1) tokens when
@@ -277,8 +280,8 @@ class Pi0DF(_model.BaseModel):
             left_tok  = self.tactile_encoder(left_inp,  finger_idx=0)  # (b, 16, emb)
             right_tok = self.tactile_encoder(right_inp, finger_idx=1)  # (b, 16, emb)
         else:  # "resnet"
-            left_tok  = self.tactile_encoder(tactile_left,  train=train)   # (b, 16, emb)
-            right_tok = self.tactile_encoder(tactile_right, train=train)   # (b, 16, emb)
+            left_tok  = self.tactile_encoder(tactile_left,  0, train=train)  # (b, 16, emb)
+            right_tok = self.tactile_encoder(tactile_right, 1, train=train)  # (b, 16, emb)
         return jnp.concatenate([left_tok, right_tok], axis=1)              # (b, 32, emb)
 
     @at.typecheck

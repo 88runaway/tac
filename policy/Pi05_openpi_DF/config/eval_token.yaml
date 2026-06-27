@@ -48,6 +48,8 @@ block_size: 5
 #   use_tactile_expert: true
 use_tactile: true           # true = 使用触觉闭环评估（_eval_tactile）
 use_tactile_expert: false   # ← 与训练时 use_tactile_expert 保持一致！
+# tactile_use_pos_emb 是模型架构参数，随 checkpoint 自动加载，无需在此设置。
+# 若训练时使用了位置编码，评估时自动生效；消融时需重新训练并切换 checkpoint。
 
 # ─── 其他 ─────────────────────────────────────────────────────────────────────
 # decimation: 训练数据以 save_frequency=2、decimation_train=1 采集

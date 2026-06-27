@@ -54,6 +54,8 @@ _DATASET_ROOT_DEFAULT = Path("/data/zjb/data/UniVTAC")
 DATASET_ROOT   = _DATASET_ROOT_DEFAULT  # overridden by --dataset_root / yaml dataset_root
 BASE_FPS       = 60
 CKPT_PATH      = Path("/data/zjb/ckpts/pi05_jax")
+# 固定 norm_stats 来源：多任务训练集统计，适用于所有单/多任务场景。
+DEFAULT_NORM_CKPT = Path("/data/zjb/ckpts/pi05_all_128_20k")
 TASK_SETTINGS  = UNIVTAC_ROOT / "policy" / "task_settings.json"
 DEFAULT_CFG    = SCRIPT_DIR / "config" / "train_df.yaml"
 DEFAULT_MT_CFG = SCRIPT_DIR.parent / "Pi05_openpi" / "multitask_config.json"
@@ -233,6 +235,26 @@ def _build_freeze_filter(args):
     return nnx.Any(*parts)
 
 
+def _resolve_params_path(params_path: str) -> str:
+    """Resolve the params path for warm-start loading.
+
+    Accepts two conventions:
+      (a) Direct params dir:  .../params          (contains _METADATA)
+      (b) Step dir:           .../16000            (contains params/_METADATA)
+
+    If the given path doesn't have _METADATA but has a 'params' subdirectory
+    that does, automatically appends '/params'.
+    """
+    p = Path(params_path)
+    if (p / "_METADATA").exists():
+        return str(p)
+    params_sub = p / "params"
+    if params_sub.is_dir() and (params_sub / "_METADATA").exists():
+        print(f"[warm_start] Auto-resolved params path: {params_path} → {params_sub}")
+        return str(params_sub)
+    return str(p)  # fallback, let downstream handle the error
+
+
 def _make_weight_loader(params_path: str, use_tactile: bool, use_tactile_expert: bool = False):
     """Build the warm-start weight loader.
 
@@ -243,6 +265,7 @@ def _make_weight_loader(params_path: str, use_tactile: bool, use_tactile_expert:
     widen the missing regex to also let it initialize from scratch. Similarly for
     ``tac_expert_*`` params when the tactile expert is newly added.
     """
+    params_path = _resolve_params_path(params_path)
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
     import openpi.training.weight_loaders as weight_loaders
 
@@ -318,6 +341,7 @@ def _make_model_config(args, num_blocks: int):
         tactile_expert_loss_weight=getattr(args, "tactile_expert_loss_weight", 0.5),
         tactile_attend_prefix=getattr(args, "tactile_attend_prefix", True),
         use_tactile_register_token=getattr(args, "use_tactile_register_token", False),
+        tactile_use_pos_emb=getattr(args, "tactile_use_pos_emb", True),
     )
 
 
@@ -335,30 +359,19 @@ def _collate(items):
 # ─── norm stats ───────────────────────────────────────────────────────────────
 
 def _resolve_norm_stats(args, default_dir: Path, task_name: str, dataset_dir: str | None = None) -> Path:
-    """Resolve norm stats directory: default path → warm start ckpt → compute.
+    """Resolve norm stats directory.
 
-    Search order:
-      1. default_dir (e.g. .../assets/univtac/univtac_insert_HDMI)
-      2. warm_start_ckpt 旁边的 assets/ 子目录（任意 asset_id）
-      3. 直接从 parquet 计算
+    固定使用 DEFAULT_NORM_CKPT/assets/ 下的 norm_stats（多任务训练集统计，适用于所有单/多任务场景）。
+    若该目录不存在则回落到从 parquet 计算。
     """
-    # 1. 默认位置
-    if (default_dir / "norm_stats.json").exists():
-        print(f"[norm_stats] Found at {default_dir}")
-        return default_dir
+    _fallback_assets = DEFAULT_NORM_CKPT / "assets"
+    if _fallback_assets.exists():
+        for sub in sorted(_fallback_assets.iterdir()):
+            if sub.is_dir() and (sub / "norm_stats.json").exists():
+                print(f"[norm_stats] Using DEFAULT_NORM_CKPT: {sub}")
+                return sub
 
-    # 2. warm_start_ckpt 旁边的 assets/
-    if args.warm_start_ckpt:
-        ckpt_root = Path(args.warm_start_ckpt).parent  # params → ckpt dir
-        assets_root = ckpt_root / "assets"
-        if assets_root.exists():
-            for sub in sorted(assets_root.iterdir()):
-                if sub.is_dir() and (sub / "norm_stats.json").exists():
-                    print(f"[norm_stats] Reusing from warm start ckpt: {sub}")
-                    return sub
-
-    # 3. 计算
-    print(f"[norm_stats] Not found, computing for {task_name} ...")
+    print(f"[norm_stats] DEFAULT_NORM_CKPT not found, computing for {task_name} ...")
     return _compute_norm_stats_from_parquet(task_name, dataset_dir=dataset_dir)
 
 
@@ -399,33 +412,46 @@ def _compute_norm_stats_from_parquet(task_name: str, dataset_dir: str | None = N
 
 
 def _resolve_norm_stats_multitask(args, default_dir: Path, dataset_dir: str) -> Path:
-    """Resolve norm stats for multi-task: default path → warm start ckpt → compute."""
-    if (default_dir / "norm_stats.json").exists():
-        print(f"[norm_stats] Found at {default_dir}")
-        return default_dir
-    if args.warm_start_ckpt:
-        ckpt_root = Path(args.warm_start_ckpt).parent
-        assets_root = ckpt_root / "assets"
-        if assets_root.exists():
-            for sub in sorted(assets_root.iterdir()):
-                if sub.is_dir() and (sub / "norm_stats.json").exists():
-                    print(f"[norm_stats] Reusing from warm start ckpt: {sub}")
-                    return sub
-    print(f"[norm_stats] Not found, computing for multitask ...")
+    """Resolve norm stats for multi-task.
+
+    固定使用 DEFAULT_NORM_CKPT/assets/ 下的 norm_stats（多任务训练集统计）。
+    若该目录不存在则回落到从 parquet 计算。
+    """
+    _fallback_assets = DEFAULT_NORM_CKPT / "assets"
+    if _fallback_assets.exists():
+        for sub in sorted(_fallback_assets.iterdir()):
+            if sub.is_dir() and (sub / "norm_stats.json").exists():
+                print(f"[norm_stats] Using DEFAULT_NORM_CKPT: {sub}")
+                return sub
+    print(f"[norm_stats] DEFAULT_NORM_CKPT not found, computing for multitask ...")
     return _compute_norm_stats_multitask_from_parquet(dataset_dir)
 
 
 def _compute_norm_stats_multitask_from_parquet(dataset_dir: str) -> Path:
-    """Compute norm stats for multi-task dataset directly from parquet files."""
+    """Compute norm stats for multi-task dataset directly from parquet files.
+
+    Supports two layouts:
+      (a) Merged dataset:    dataset_dir/data/**/*.parquet
+      (b) Per-task layout:   dataset_dir/<task>/data/**/*.parquet  (tac_all style)
+    """
     import pyarrow.parquet as pq
     import tqdm as _tqdm
     sys.path.insert(0, str(OPENPI_ROOT / "src"))
     import openpi.shared.normalize as normalize
 
-    data_dir = Path(dataset_dir) / "data"
-    parquet_files = sorted(data_dir.glob("**/*.parquet"))
+    root = Path(dataset_dir)
+    # Try merged layout first
+    merged_data_dir = root / "data"
+    if merged_data_dir.is_dir():
+        parquet_files = sorted(merged_data_dir.glob("**/*.parquet"))
+    else:
+        # Per-task layout: <task>/data/**/*.parquet
+        parquet_files = sorted(root.glob("*/data/**/*.parquet"))
     if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found in {data_dir}")
+        raise FileNotFoundError(
+            f"No parquet files found under {dataset_dir} "
+            "(checked both merged layout '<root>/data/' and per-task '<root>/<task>/data/')"
+        )
 
     stats = {k: normalize.RunningStats() for k in ["state", "actions"]}
     for pf in _tqdm.tqdm(parquet_files, desc="norm_stats multitask-df"):
@@ -860,6 +886,14 @@ def main():
                             "true: 将 Sparsh ViT 的 register token（全局 DINO 摘要）作为额外 token 加入 suffix，"
                             "每个手指输出 tactile_tokens_per_finger+1 个 token（共 34 个）; "
                             "false(默认): 丢弃 register token，仅使用 16 个空间 patch token（共 32 个）"
+                        ))
+    parser.add_argument("--tactile_use_pos_emb", type=_str2bool,
+                        default=cfg.get("tactile_use_pos_emb", True),
+                        help=(
+                            "是否对触觉 token 添加可学习位置编码（spatial_emb + finger_emb）。"
+                            "true（默认）: 对每个 token 叠加空间位置编码（4×4 grid）和手指身份编码（左/右）。"
+                            "false: 不添加位置编码（消融实验用），两个编码参数不创建。"
+                            "此参数为模型架构参数，随 checkpoint 保存，评估时自动继承，不可在推理时切换。"
                         ))
 
     # ── Module freezing (true = freeze) ───────────────────────────────────────

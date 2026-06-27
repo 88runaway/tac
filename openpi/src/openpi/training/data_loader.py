@@ -339,6 +339,27 @@ def _is_multitask_root(root: str | Path | None) -> list[Path]:
     return task_dirs
 
 
+def _read_episode_indices(root: Path) -> list[int] | None:
+    """Read actual episode_index values from meta/episodes.jsonl.
+
+    When a dataset is a resampled subset with non-consecutive episode indices
+    (e.g. [0, 3, 4, 11, ...]), LeRobotDataset must receive the explicit list;
+    otherwise it falls back to range(total_episodes) and fails to find files.
+    Returns None if the file is missing (full dataset, range() is fine).
+    """
+    import json as _json
+    episodes_jsonl = root / "meta" / "episodes.jsonl"
+    if not episodes_jsonl.exists():
+        return None
+    indices = []
+    with open(episodes_jsonl) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                indices.append(_json.loads(line)["episode_index"])
+    return indices if indices else None
+
+
 def _create_single_lerobot_dataset(
     repo_id: str,
     root: str | Path,
@@ -349,6 +370,10 @@ def _create_single_lerobot_dataset(
     """Create one lerobot dataset (with optional TactilePreloadedDataset wrapper)."""
     root = Path(root)
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=str(root))
+
+    # Always pass explicit episode indices so resampled subsets (non-consecutive
+    # episode_index values) don't cause LeRobotDataset to fall back to range(N).
+    episode_indices = _read_episode_indices(root)
 
     full_delta_ts = dict(delta_ts)
     if extra_delta_timestamps:
@@ -368,6 +393,7 @@ def _create_single_lerobot_dataset(
         base_delta_ts = {k: v for k, v in full_delta_ts.items() if k not in tactile_preload_keys}
         base_dataset = lerobot_dataset.LeRobotDataset(
             repo_id, root=str(root), delta_timestamps=base_delta_ts, video_backend="pyav",
+            episodes=episode_indices,
         )
         if prompt_from_task:
             base_dataset = TransformedDataset(
@@ -383,6 +409,7 @@ def _create_single_lerobot_dataset(
 
     dataset = lerobot_dataset.LeRobotDataset(
         repo_id, root=str(root), delta_timestamps=full_delta_ts, video_backend="pyav",
+        episodes=episode_indices,
     )
     if prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
