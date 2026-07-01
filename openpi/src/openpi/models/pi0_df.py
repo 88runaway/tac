@@ -172,6 +172,19 @@ class Pi0DF(_model.BaseModel):
                     # freeze_filter (see train_df._build_freeze_filter).
                     logger.info("Pi0DF: sparsh_freeze_backbone=True — backbone will "
                                 "be frozen by the training freeze_filter.")
+            elif config.tactile_encoder_type == "univtac":
+                _stack_fc = getattr(config, "univtac_stack_fc", False)
+                self.tactile_encoder = _tactile_enc.TactileUniVTACEncoder.from_pretrained(
+                    npz_path=config.univtac_encoder_path,
+                    output_dim=action_expert_config.width,
+                    num_tokens=self.tactile_tokens_per_finger,
+                    use_pos_emb=_use_pos_emb,
+                    stack_fc=_stack_fc,
+                    rngs=rngs,
+                )
+                if getattr(config, "univtac_freeze_backbone", False):
+                    logger.info("Pi0DF: univtac_freeze_backbone=True — backbone will "
+                                "be frozen by the training freeze_filter.")
             else:  # "resnet" (default)
                 self.tactile_encoder = _tactile_enc.TactileResNetEncoder(
                     output_dim=action_expert_config.width,
@@ -184,11 +197,16 @@ class Pi0DF(_model.BaseModel):
             _tokens_per_finger = self.tactile_tokens_per_finger + (1 if _use_reg_tok else 0)
             self.num_tactile_tokens = _tokens_per_finger * 2  # left + right
 
-        # ── Tactile attention-to-prefix control ──────────────────────────────────
-        # When False, current tactile tokens in the suffix are blocked from
-        # attending to prefix tokens (image/language); they can only self-attend
-        # and attend to action tokens.
+        # ── Tactile attention controls ────────────────────────────────────────────
+        # tactile_attend_prefix: when False, tactile tokens cannot attend prefix
+        #   (image/language) tokens.
+        # tactile_attend_self: when False, tactile tokens cannot attend each other
+        #   (inter-tactile self-attention is blocked).
+        # When BOTH are False, tactile tokens attend NO other token — they become
+        # pure conditioning signals that are passively attended by action tokens
+        # but emit no queries themselves.
         self.tactile_attend_prefix = config.tactile_attend_prefix
+        self.tactile_attend_self   = getattr(config, "tactile_attend_self", True)
 
         # ── Tactile expert projections (independent Transformer via 3rd expert) ───
         if self.use_tactile_expert:
@@ -213,7 +231,10 @@ class Pi0DF(_model.BaseModel):
             + (f" [{config.tactile_encoder_type}]" if self.use_tactile else "")
             + (f", freeze_backbone={config.sparsh_freeze_backbone}"
                if self.use_tactile and config.tactile_encoder_type == "sparsh" else "")
+            + (f", univtac_freeze_backbone={getattr(config, 'univtac_freeze_backbone', False)}"
+               if self.use_tactile and config.tactile_encoder_type == "univtac" else "")
             + (f", tactile_attend_prefix={self.tactile_attend_prefix}"
+               f", tactile_attend_self={self.tactile_attend_self}"
                f", num_tactile_tokens={self.num_tactile_tokens}"
                if self.use_tactile else "")
             + f", use_tactile_expert={self.use_tactile_expert}"
@@ -577,6 +598,50 @@ class Pi0DF(_model.BaseModel):
         block = is_tac_q[:, None] & is_prefix_k[None, :]              # (q, k)
         return attn_mask & ~block[None, :, :]  # broadcast over batch
 
+    def _apply_tactile_no_self_mask(
+        self,
+        attn_mask: at.Bool[at.Array, "b q k"],
+        prefix_len: int,
+        suffix_len: int,
+        *,
+        is_cached: bool,
+    ) -> at.Bool[at.Array, "b q k"]:
+        """Block current tactile tokens from attending to each other (self-attention).
+
+        Combined with ``_apply_tactile_no_prefix_mask``, tactile tokens become
+        pure "passive KV" — they inject information into action tokens via
+        cross-attention but never query any token themselves.
+
+        Sequence layout:
+          Full forward:   [prefix(p) | tac(nt) | action(ah)]
+          Cached forward: query = [tac(nt) | action(ah)],
+                          key   = [prefix(p) | tac(nt) | action(ah)]
+        """
+        nt = self.num_tactile_tokens
+        q_len = attn_mask.shape[1]
+        k_len = attn_mask.shape[2]
+
+        if is_cached:
+            # Query: current suffix; tactile at indices 0..nt-1
+            tac_q_start = 0
+            tac_q_end   = nt
+            # Key: [prefix(p) | current_suffix]; tactile keys at prefix_len..prefix_len+nt-1
+            tac_k_start = prefix_len
+            tac_k_end   = prefix_len + nt
+        else:
+            # Full forward: both query and key span the full sequence
+            tac_q_start = prefix_len
+            tac_q_end   = prefix_len + nt
+            tac_k_start = prefix_len
+            tac_k_end   = prefix_len + nt
+
+        q_idx = jnp.arange(q_len)
+        k_idx = jnp.arange(k_len)
+        is_tac_q = (q_idx >= tac_q_start) & (q_idx < tac_q_end)  # (q,)
+        is_tac_k = (k_idx >= tac_k_start) & (k_idx < tac_k_end)  # (k,)
+        block = is_tac_q[:, None] & is_tac_k[None, :]             # (q, k)
+        return attn_mask & ~block[None, :, :]
+
     def _forward_3expert(
         self,
         prefix_tokens, prefix_mask, prefix_ar_mask,
@@ -616,6 +681,14 @@ class Pi0DF(_model.BaseModel):
             # Block tactile tokens from attending to prefix when tactile_attend_prefix=False
             if self.use_tactile and not self.tactile_attend_prefix:
                 attn_mask = self._apply_tactile_no_prefix_mask(
+                    attn_mask,
+                    prefix_len=prefix_tokens.shape[1],
+                    suffix_len=suffix_tokens.shape[1],
+                    is_cached=False,
+                )
+            # Block tactile tokens from attending each other when tactile_attend_self=False
+            if self.use_tactile and not self.tactile_attend_self:
+                attn_mask = self._apply_tactile_no_self_mask(
                     attn_mask,
                     prefix_len=prefix_tokens.shape[1],
                     suffix_len=suffix_tokens.shape[1],
@@ -670,6 +743,18 @@ class Pi0DF(_model.BaseModel):
                     tac_expert_tokens.shape[1] if tac_expert_tokens is not None else 0
                 )
                 full_attn_mask = self._apply_tactile_no_prefix_mask(
+                    full_attn_mask,
+                    prefix_len=_plen,
+                    suffix_len=_slen,
+                    is_cached=True,
+                )
+            # Block tactile tokens from attending each other when tactile_attend_self=False
+            if self.use_tactile and not self.tactile_attend_self:
+                _slen = suffix_tokens.shape[1]
+                _plen = full_attn_mask.shape[2] - _slen - (
+                    tac_expert_tokens.shape[1] if tac_expert_tokens is not None else 0
+                )
+                full_attn_mask = self._apply_tactile_no_self_mask(
                     full_attn_mask,
                     prefix_len=_plen,
                     suffix_len=_slen,

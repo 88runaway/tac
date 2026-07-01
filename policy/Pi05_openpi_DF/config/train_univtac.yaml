@@ -1,0 +1,118 @@
+# ─── UniVTAC Pi0.5-DF Training Configuration (UniVTAC Pretrained Encoder) ────
+#
+# 使用 UniVTAC 预训练的 ResNet-18 (BatchNorm) 作为触觉编码器。
+# 与 train_resnet.yaml 完全相同，除了：
+#   - tactile_encoder_type: "univtac"（使用 BatchNorm 版 ResNet-18，从预训练权重初始化）
+#   - univtac_encoder_path: 指向转换好的 .npz 权重文件
+#   - univtac_stack_fc: true（使用原始 fc 路径，1 token/指，共 2 token）
+#   - tactile_tokens_per_finger: 1（与 univtac_stack_fc=true 配合）
+#   - univtac_freeze_backbone: 可选冻结 backbone（第一阶段推荐 true）
+#
+# 使用前必须先转换权重（需要 PyTorch 环境）：
+#   conda activate tac   # 或其他有 torch 的 conda 环境
+#   cd /data/zjb/UniVTAC
+#   python policy/Pi05_openpi_DF/convert_univtac_encoder_weights.py convert
+#
+# python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 0,1,2,3 --config policy/Pi05_openpi_DF/config/train_univtac.yaml
+
+# 多任务:  python policy/Pi05_openpi_DF/train_df.py --task all --gpu 0,1,2,3 \
+#               --config policy/Pi05_openpi_DF/config/train_univtac.yaml
+#
+# ─── Diffusion Forcing ────────────────────────────────────────────────────────
+block_size: 5
+mix_prob: 1.0
+block_time_sampling: monotone
+reweight_gamma: 0.0
+phase_alpha: 1.0
+
+# ─── Tactile injection ────────────────────────────────────────────────────────
+use_tactile: true
+# stack_fc=true 模式下每指输出 1 个全局 token（左+右共 2 token）
+tactile_tokens_per_finger: 1
+
+# tactile_encoder_type: 选择触觉编码器后端
+#   "univtac" — UniVTAC 预训练 ResNet-18（BatchNorm），单帧 3 通道输入。
+#               backbone（conv+BN 层，layer1-4）从 UniVTAC 多任务触觉预训练权重初始化；
+#               fc(512→512) 同样从预训练权重加载；proj(512→output_dim) 随机初始化。
+tactile_encoder_type: "univtac"
+
+# univtac_encoder_path: 转换好的 JAX .npz 权重路径
+#   由 convert_univtac_encoder_weights.py convert 生成。
+univtac_encoder_path: "/data/zjb/ckpts/univtac_encoder/univtac_resnet18_jax.npz"
+
+# univtac_stack_fc: 是否使用堆叠 fc 路径（全局 1 token 模式）
+#   true  — GlobalAvgPool → 预训练 fc(512→512) → 新 proj(512→output_dim) → 1 token/指
+#            需与 tactile_tokens_per_finger=1 配合使用（已在上方设置）。
+#   false — 双线性 resize → 新 proj → N token/指（空间模式，需 tokens_per_finger>1）
+univtac_stack_fc: true
+
+# univtac_freeze_backbone: 是否冻结 UniVTAC backbone（conv+BN+fc）
+#   true  — 第一阶段推荐：仅训练 proj，保留预训练触觉特征
+#   false — 全量微调，训练数据充足时使用
+univtac_freeze_backbone: false
+
+# use_tactile_register_token: 仅 sparsh 有效，univtac 忽略
+use_tactile_register_token: false
+
+# tactile_use_pos_emb: stack_fc+1token 模式下仅剩 finger_emb（区分左/右指）有意义
+#   spatial_emb 退化为单个可学习偏置，影响不大；false 可减少无意义参数。
+tactile_use_pos_emb: false
+
+# sparsh_npz_path: 仅 tactile_encoder_type=="sparsh" 时使用，此处保留以便切换
+sparsh_npz_path: "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"
+sparsh_freeze_backbone: false
+
+# ─── Tactile expert (future tactile prediction) ──────────────────────────────
+use_tactile_expert: false
+tactile_expert_variant: "gemma_300m"
+tactile_expert_num_tokens: 32
+tactile_expert_loss_weight: 1.0
+tac_expert_local_attn: false
+
+# tactile_attend_prefix + tactile_attend_self: 控制触觉 token 的注意力行为
+# 当两者同时为 false，触觉 token 进入"纯被动 KV 注入"模式：
+#   - 触觉 token 不 attend 任何 token（不看 prefix，不互相 attend）
+#   - action token 仍可 attend 触觉 token（正常读取触觉信息）
+# 对于 1-token 全局模式而言，self-attend 无实际意义（只有 1 个 token），
+# 同时设置 false 可减少无效 attention 计算。
+tactile_attend_prefix: false
+tactile_attend_self: false
+
+# ─── 数据集路径 ────────────────────────────────────────────────────────────────
+tactile_dataset_root: "/data/zjb/data/UniVTAC/data_lerobot_openpi_df_tactile"
+multitask_data_dir: "/data/zjb/data/UniVTAC/tac_all"
+
+# ─── 模块冻结 (freeze) ────────────────────────────────────────────────────────
+freeze:
+  img:                    true   # SigLIP 图像编码器
+  paligemma:              true   # PaliGemma 主干 (gemma_2b, prefix LLM)
+  action_expert:          false  # Action Expert (gemma_300m)
+  projections:            false  # action_in_proj / action_out_proj / time_mlp_*
+  tactile_expert_freeze:  false
+  sparsh_freeze_backbone: false
+
+# ─── 训练超参 ─────────────────────────────────────────────────────────────────
+batch_size: 256
+steps: 10000
+lr: 8e-5
+warmup_steps: 1000
+save_freq: 1000
+log_freq: 50
+num_workers: 12
+prefetch_factor: 4
+action_horizon: 50
+ema: true
+seed: 42
+
+# ─── Checkpoint 保留策略 ──────────────────────────────────────────────────────
+keep_period: 5000
+
+# ─── FSDP ─────────────────────────────────────────────────────────────────────
+fsdp_devices: 1
+
+# ─── 输出目录 ─────────────────────────────────────────────────────────────────
+output_dir: "/data/zjb/ckpts/pi05_df_univtac_lift_can"
+
+# ─── WandB ────────────────────────────────────────────────────────────────────
+wandb: true
+wandb_project: "univtac-pi05-df-univtac-enc"

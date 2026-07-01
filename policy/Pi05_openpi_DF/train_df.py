@@ -230,6 +230,15 @@ def _build_freeze_filter(args):
         # Freeze Sparsh ViT backbone; AttentionPool + proj remain trainable.
         # NNX param path: tactile_encoder/backbone/<block_i>/...
         parts.append(nnx_utils.PathRegex(".*tactile_encoder/backbone/.*"))
+    if getattr(args, "univtac_freeze_backbone", False):
+        # Freeze UniVTAC ResNet-18 backbone conv + BN layers (+ fc when stack_fc=True).
+        # proj, spatial_emb, finger_emb remain trainable.
+        # NNX param paths: tactile_encoder/stem_conv/*, tactile_encoder/stem_bn/*,
+        #                  tactile_encoder/layer{1-4}/*, tactile_encoder/fc/*
+        parts.append(nnx_utils.PathRegex(".*tactile_encoder/stem_conv/.*"))
+        parts.append(nnx_utils.PathRegex(".*tactile_encoder/stem_bn/.*"))
+        parts.append(nnx_utils.PathRegex(".*tactile_encoder/layer[1-4]/.*"))
+        parts.append(nnx_utils.PathRegex(".*tactile_encoder/fc/.*"))
     if not parts:
         return nnx.Nothing
     return nnx.Any(*parts)
@@ -335,11 +344,16 @@ def _make_model_config(args, num_blocks: int):
         sparsh_npz_path=getattr(args, "sparsh_npz_path",
                                 "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"),
         sparsh_freeze_backbone=getattr(args, "sparsh_freeze_backbone", False),
+        univtac_encoder_path=getattr(args, "univtac_encoder_path",
+                                     "/data/zjb/ckpts/univtac_encoder/univtac_resnet18_jax.npz"),
+        univtac_freeze_backbone=getattr(args, "univtac_freeze_backbone", False),
+        univtac_stack_fc=getattr(args, "univtac_stack_fc", False),
         use_tactile_expert=getattr(args, "use_tactile_expert", False),
         tactile_expert_variant=getattr(args, "tactile_expert_variant", "gemma_300m"),
         tactile_expert_num_tokens=getattr(args, "tactile_expert_num_tokens", 32),
         tactile_expert_loss_weight=getattr(args, "tactile_expert_loss_weight", 0.5),
         tactile_attend_prefix=getattr(args, "tactile_attend_prefix", True),
+        tactile_attend_self=getattr(args, "tactile_attend_self", True),
         use_tactile_register_token=getattr(args, "use_tactile_register_token", False),
         tactile_use_pos_emb=getattr(args, "tactile_use_pos_emb", True),
     )
@@ -850,8 +864,13 @@ def main():
                         help="触觉数据集根路径")
     parser.add_argument("--tactile_encoder_type", type=str,
                         default=cfg.get("tactile_encoder_type", "resnet"),
-                        choices=["resnet", "sparsh"],
-                        help="触觉编码器后端: resnet=ResNet-18单帧; sparsh=Sparsh DINO ViT双帧")
+                        choices=["resnet", "sparsh", "univtac"],
+                        help=(
+                            "触觉编码器后端: "
+                            "resnet=ResNet-18从零训练(单帧3ch); "
+                            "sparsh=Sparsh DINO ViT双帧; "
+                            "univtac=UniVTAC预训练ResNet-18(BatchNorm,单帧3ch)"
+                        ))
     parser.add_argument("--sparsh_npz_path", type=str,
                         default=cfg.get("sparsh_npz_path",
                                         "/data/zjb/ckpts/sparsh/dino/sparsh_dino_small_jax.npz"),
@@ -859,6 +878,21 @@ def main():
     parser.add_argument("--sparsh_freeze_backbone", type=_str2bool,
                         default=cfg.get("sparsh_freeze_backbone", False),
                         help="冻结 Sparsh ViT backbone（proj+spatial_emb+finger_emb 始终可训）")
+    parser.add_argument("--univtac_encoder_path", type=str,
+                        default=cfg.get("univtac_encoder_path",
+                                        "/data/zjb/ckpts/univtac_encoder/univtac_resnet18_jax.npz"),
+                        help="UniVTAC 预训练 ResNet-18 权重路径（仅 tactile_encoder_type==univtac 时使用）"
+                             "由 convert_univtac_encoder_weights.py convert 生成")
+    parser.add_argument("--univtac_freeze_backbone", type=_str2bool,
+                        default=cfg.get("univtac_freeze_backbone", False),
+                        help="冻结 UniVTAC ResNet-18 backbone（proj+spatial_emb+finger_emb 始终可训）")
+    parser.add_argument("--univtac_stack_fc", type=_str2bool,
+                        default=cfg.get("univtac_stack_fc", False),
+                        help=(
+                            "true: GlobalAvgPool→预训练fc(512→512)→新proj(512→1024)，输出1 token/指；"
+                            "false(默认): 双线性resize→新proj，输出16 token/指（空间模式）。"
+                            "需与 tactile_tokens_per_finger=1 配合使用。"
+                        ))
 
     # ── Tactile expert (future tactile prediction) ────────────────────────
     parser.add_argument("--use_tactile_expert", type=_str2bool,
@@ -877,7 +911,15 @@ def main():
                         default=cfg.get("tactile_attend_prefix", True),
                         help=(
                             "true(默认): suffix 中的触觉 token 可以 attend prefix（图像/语言条件）; "
-                            "false: 触觉 token 仅 self-attend，不与 prefix 交互"
+                            "false: 触觉 token 不 attend prefix"
+                        ))
+    parser.add_argument("--tactile_attend_self", type=_str2bool,
+                        default=cfg.get("tactile_attend_self", True),
+                        help=(
+                            "true(默认): 触觉 token 之间可以互相 attend（双向 self-attention）; "
+                            "false: 禁止触觉 token 互相 attend。"
+                            "与 tactile_attend_prefix=false 同时设置时，触觉 token 不 attend 任何 token，"
+                            "仅被 action token 被动 attend（纯被动 KV 注入模式）。"
                         ))
     parser.add_argument("--use_tactile_register_token", type=_str2bool,
                         default=cfg.get("use_tactile_register_token", False),

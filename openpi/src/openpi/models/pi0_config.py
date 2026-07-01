@@ -214,6 +214,11 @@ class Pi0DFConfig(_model.BaseModelConfig):
     #   "sparsh"  — Sparsh DINO ViT-Small (two frames cat'd → 6-ch input).
     #               Requires converted weights at `sparsh_npz_path`.
     #               AttentionPool + proj are randomly init'd; ViT is pretrained.
+    #   "univtac" — ResNet-18 with BatchNorm, initialized from UniVTAC pre-trained
+    #               tactile encoder (multi-task RGB/marker/depth supervised).
+    #               Requires converted weights at `univtac_encoder_path`.
+    #               Spatial proj head + pos_emb are randomly / zero-initialised.
+    #               Run convert_univtac_encoder_weights.py to produce the .npz.
     tactile_encoder_type: str = "resnet"
 
     # Path to .npz weights produced by convert_sparsh_weights.py.
@@ -224,6 +229,22 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # The AttentionPool and projection layers are always trainable.
     # Useful for the first phase of training when data is limited.
     sparsh_freeze_backbone: bool = False
+
+    # Path to .npz weights produced by convert_univtac_encoder_weights.py.
+    # Only used when tactile_encoder_type == "univtac".
+    univtac_encoder_path: str = "/data/zjb/ckpts/univtac_encoder/univtac_resnet18_jax.npz"
+
+    # When True, freeze the ResNet-18 backbone of TactileUniVTACEncoder during training.
+    # The spatial proj head, spatial_emb, and finger_emb remain trainable.
+    # Recommended for the first phase of fine-tuning.
+    univtac_freeze_backbone: bool = False
+
+    # When True, use the original UniVTAC global fc path instead of the spatial-resize path:
+    #   GlobalAvgPool → pretrained fc (512→512) → new proj (512→output_dim)
+    # Outputs 1 token per finger (2 total) instead of 16.
+    # Requires tactile_tokens_per_finger=1.
+    # The fc weights are loaded from univtac_encoder_path; proj is randomly initialised.
+    univtac_stack_fc: bool = False
 
     # When True, the ViT register token (global DINO summary at index 0 of the
     # 197-token sequence) is extracted and prepended as an extra token per finger,
@@ -269,10 +290,21 @@ class Pi0DFConfig(_model.BaseModelConfig):
     # When True (default), current tactile tokens in the action-expert suffix are
     # allowed to attend to all prefix tokens (image/language conditioning), which
     # is the standard cross-stream behaviour.
-    # When False, tactile tokens are restricted to self-attend only (they cannot
-    # attend to any prefix token), effectively making them a prefix-independent
-    # tactile condition that interacts with action tokens only.
+    # When False, tactile tokens cannot attend any prefix token.
     tactile_attend_prefix: bool = True
+
+    # When True (default), tactile tokens can attend each other (bidirectional
+    # self-attention within the tactile block).
+    # When False, inter-tactile self-attention is blocked — tactile tokens emit
+    # no queries at all within the suffix.
+    #
+    # When BOTH tactile_attend_prefix=False AND tactile_attend_self=False,
+    # tactile tokens become pure "passive conditioning signals":
+    #   - they do NOT attend any other token (no queries)
+    #   - action tokens CAN still attend them (read their KV representations)
+    # This is the strictest isolation mode and avoids any gradient flow from
+    # attention back into the tactile encoder through the query path.
+    tactile_attend_self: bool = True
 
     def __post_init__(self):
         if self.max_token_len is None:

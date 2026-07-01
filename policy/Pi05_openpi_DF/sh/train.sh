@@ -40,7 +40,7 @@ python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 0,1,2,3 \
 
 python policy/Pi05_openpi_DF/train_df.py --task lift_can --gpu 0,1,2,3 \
     --train_config /data/zjb/UniVTAC/policy/Pi05_openpi_DF/config/train_resnet.yaml \
-    --warm_start_ckpt /data/zjb/ckpts/pi05_all_128_20k/params --overwrite
+     --resume
 
 # 2. 训练（仅启用触觉 condition）
 python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 3,4,5,6 \
@@ -69,6 +69,11 @@ python policy/Pi05_openpi_DF/train_df.py --task insert_HDMI --gpu 4,5,6,7 \
     --tactile_expert_loss_weight 0.5 \
     --block_time_sampling monotone --mix_prob 1.0 \
     --resume
+
+python policy/Pi05_openpi_DF/train_df.py \
+    --task lift_can --gpu 4,5,6,7 \
+    --train_config policy/Pi05_openpi_DF/config/train_univtac.yaml \
+    --overwrite
 
 # 4. 评估（block 级触觉反馈 + tactile expert mutual attention）
 # 在 deploy config 中设置 use_tactile: true; tactile expert 自动从 ckpt 加载
